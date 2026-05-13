@@ -10,32 +10,22 @@ static const char *TAG = "Light_Router";
 // ==========================================
 // ОБРОБНИК СИГНАЛІВ ZIGBEE
 // ==========================================
-// Ця функція викликається автоматично стеком Zigbee, коли відбуваються якісь події (сигнали)
 void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
-    // Отримуємо тип поточного сигналу (наприклад: старт, пошук мережі, помилка)
     esp_zb_app_signal_type_t sig = (esp_zb_app_signal_type_t)*signal_struct->p_app_signal;
-    // Отримуємо статус виконання попередньої команди (успіх або код помилки)
     esp_err_t status = signal_struct->esp_err_status;
 
-    // Перевіряємо, який саме сигнал ми отримали
     switch (sig) {
-        // Сигнал: Базова ініціалізація стека завершена, час налаштовувати пристрій
         case ESP_ZB_ZDO_SIGNAL_SKIP_STARTUP:
             ESP_LOGI(TAG, "Стек Zigbee запущено, ініціалізація BDB...");
-            // Запускаємо режим ініціалізації (Base Device Behavior - базова поведінка пристрою)
             esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_INITIALIZATION);
             break;
 
-        // Сигнал: Пристрій запускається вперше після прошивки
         case ESP_ZB_BDB_SIGNAL_DEVICE_FIRST_START:
-        // Сигнал: Пристрій перезавантажився (був вимкнений з розетки і ввімкнений знову)
         case ESP_ZB_BDB_SIGNAL_DEVICE_REBOOT:
             if (status == ESP_OK) { // Якщо попередня ініціалізація пройшла без помилок
                 ESP_LOGI(TAG, "Пристрій готовий. Починаємо пошук мережі (Network Steering)...");
-                // Роутер не створює мережу, а шукає існуючу, тому запускаємо режим NETWORK_STEERING
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
             } else {
-                // Якщо ініціалізація провалилася, виводимо код помилки
                 ESP_LOGE(TAG, "Помилка старту BDB: %d", status);
             }
             break;
@@ -61,7 +51,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
 
         // Для всіх інших сигналів, які нас не цікавлять
         default:
-            // Просто друкуємо їх у лог для дебаггінгу (видно лише в режимі DEBUG)
             ESP_LOGD(TAG, "Отримано Zigbee сигнал: %d, статус: %d", sig, status);
             break;
     }
@@ -74,10 +63,10 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
     if (callback_id == ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
         esp_zb_zcl_set_attr_value_message_t *attr_msg = (esp_zb_zcl_set_attr_value_message_t *)message;
         
-        ESP_LOGI(TAG, "Зміна атрибута на ЕП %d, кластер 0x%x, ID 0x%x", 
+        ESP_LOGI(TAG, "Зміна атрибута на ЕП %d, кластер 0x%x, атрибут ID 0x%x", 
                  attr_msg->info.dst_endpoint, attr_msg->info.cluster, attr_msg->attribute.id);
 
-        // ОБРОБКА ТІЛЬКИ ЯСКРАВОСТІ (Cluster 0x0008)
+        // ОБРОБКА ЯСКРАВОСТІ (Cluster 0x0008)
         if (attr_msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
