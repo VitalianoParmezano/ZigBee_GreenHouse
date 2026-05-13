@@ -51,12 +51,13 @@ static void active_ep_cb(esp_zb_zdp_status_t zdo_status, uint8_t ep_count, uint8
 
 // Функція для відправки команди ON/OFF (Unicast)
 static void send_on_off_to_node(uint16_t target_addr, uint8_t endpoint, uint8_t command_id) {
-    esp_zb_zcl_on_off_cmd_t cmd_req;
+esp_zb_zcl_on_off_cmd_t cmd_req;
+
     cmd_req.zcl_basic_cmd.src_endpoint = HA_ONOFF_SWITCH_ENDPOINT;
-    cmd_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_BIT;
-    cmd_req.dst_addr_u.addr_16 = target_addr;
-    cmd_req.dst_endpoint = endpoint;
-    cmd_req.on_off_cmd_id = command_id; // Наприклад: ESP_ZB_ZCL_CMD_ON_OFF_TOGGLE_ID
+    cmd_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT; 
+    cmd_req.zcl_basic_cmd.dst_addr_u.addr_short = target_addr;
+    cmd_req.zcl_basic_cmd.dst_endpoint = endpoint;
+    cmd_req.on_off_cmd_id = command_id; 
 
     esp_zb_lock_acquire(portMAX_DELAY);
     esp_zb_zcl_on_off_cmd_req(&cmd_req);
@@ -93,7 +94,7 @@ static void console_task(void *pvParameters)
             if (cmd == 'e') {
                 if (node_count > 0) {
                     esp_zb_zdo_active_ep_req_param_t ep_req;
-                    ep_req.dst_nwk_addr = target_addr;
+                    ep_req.addr_of_interest = target_addr;
                     
                     printf("Запитую ендпоінти у 0x%04x...\n", target_addr);
                     esp_zb_lock_acquire(portMAX_DELAY);
@@ -114,16 +115,16 @@ static void console_task(void *pvParameters)
             }
             // 3. Перевірка реальних з'єднань (Neighbor Table)
             else if (cmd == 's') {
-                printf("--- Таблиця сусідів (Stack Neighbor Table) ---\n");
-                void *it = NULL;
-                int count = 0;
-                while ((it = esp_zb_nwk_get_next_node_info(it)) != NULL) {
-                    esp_zb_node_info_t *node_info = (esp_zb_node_info_t *)it;
-                    printf("Пристрій %d: Адреса: 0x%04x, Тип: %d\n", 
-                            ++count, node_info->short_addr, node_info->device_type);
-                }
-                if (count == 0) printf("Таблиця порожня.\n");
-                printf("--------------------------------------------\n");
+                // printf("--- Таблиця сусідів (Stack Neighbor Table) ---\n");
+                // void *it = NULL;
+                // int count = 0;
+                // while ((it = esp_zb_nwk_get_next_node_info(it)) != NULL) {
+                //     esp_zb_node_info_t *node_info = (esp_zb_node_info_t *)it;
+                //     printf("Пристрій %d: Адреса: 0x%04x, Тип: %d\n", 
+                //             ++count, node_info->short_addr, node_info->device_type);
+                // }
+                // if (count == 0) printf("Таблиця порожня.\n");
+                // printf("--------------------------------------------\n");
             }
             // 4. Навігація (+)
             else if (cmd == '+') {
@@ -150,7 +151,10 @@ static void console_task(void *pvParameters)
                 for (int i = 0; i < node_count; i++) {
                     printf(" %d. 0x%04x %s\n", i+1, connected_nodes[i], (i==current_node_index) ? "<-- Поточна" : "");
                 }
-            } else {
+            } else if (cmd == 'i') {
+                // Показує які є ендпоінти на самому роутері
+            }
+            else {
                 printf("Невідома команда.\n");
             }
         }

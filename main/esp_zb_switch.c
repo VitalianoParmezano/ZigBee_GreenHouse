@@ -5,7 +5,7 @@
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
 
-static const char *TAG = "SIMPLE_ROUTER"; // Текстова мітка (тег), яка буде додаватися до кожного лога цього файлу
+static const char *TAG = "Light_Router"; 
 
 // ==========================================
 // ОБРОБНИК СИГНАЛІВ ZIGBEE
@@ -67,69 +67,79 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
     }
 }
 
+static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
+{
+    esp_err_t ret = ESP_OK;
+
+    if (callback_id == ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
+        esp_zb_zcl_set_attr_value_message_t *attr_msg = (esp_zb_zcl_set_attr_value_message_t *)message;
+        
+        ESP_LOGI(TAG, "Зміна атрибута на ЕП %d, кластер 0x%x, ID 0x%x", 
+                 attr_msg->info.dst_endpoint, attr_msg->info.cluster, attr_msg->attribute.id);
+
+        // ОБРОБКА ТІЛЬКИ ЯСКРАВОСТІ (Cluster 0x0008)
+        if (attr_msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
+            if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
+                uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
+                //light_driver_set_brightness(attr_msg->info.dst_endpoint, level);
+                ESP_LOGI(TAG, "Нова яскравість: %d на ендпоінті: %d", level, attr_msg->info.dst_endpoint);
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
+    }
+    return ret;
+}
+
 // ==========================================
 // ГОЛОВНА ЗАДАЧА ZIGBEE (ПОТІК)
 // ==========================================
-static void zigbee_task(void *arg) {
-    // 1. Конфігурація мережевої ролі пристрою
-    esp_zb_cfg_t zb_nwk_cfg = {
-        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER, // Вказуємо, що ми Роутер (ретранслятор)
-        .install_code_policy = false,             // Вимикаємо складну політику інсталяційних кодів безпеки
-        .nwk_cfg.zczr_cfg = { 0 },                // Обнуляємо інші мережеві параметри (використовуємо стандартні)
-    };
-    esp_zb_init(&zb_nwk_cfg); // Ініціалізуємо стек Zigbee нашими параметрами
 
-    // Дозволяємо пристрою шукати мережі на всіх стандартних Zigbee каналах (з 11 по 26)
+static void zigbee_task(void *arg) {
+    // 1. Конфігурація мережевої ролі пристрою (Роутер)
+    esp_zb_cfg_t zb_nwk_cfg = {
+        .esp_zb_role = ESP_ZB_DEVICE_TYPE_ROUTER,
+        .install_code_policy = false,
+        .nwk_cfg.zczr_cfg = { 0 },
+    };
+    esp_zb_init(&zb_nwk_cfg);
     esp_zb_set_primary_network_channel_set(ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK);
 
-    // 2. Створення базового кластера (Basic Cluster - містить загальну інфу про пристрій)
-    esp_zb_basic_cluster_cfg_t basic_cfg = {
-        .zcl_version = 0x08, // Використовуємо специфікацію ZCL версії 8
-        .power_source = ESP_ZB_ZCL_BASIC_POWER_SOURCE_MAINS_SINGLE_PHASE, // Вказуємо, що ми живимося від мережі 220В (щоб координатор знав, що ми не спимо)
-    };
-    // Створюємо сам кластер у пам'яті
-    esp_zb_attribute_list_t *basic_cluster = esp_zb_basic_cluster_create(&basic_cfg);
-    // Записуємо в кластер назву виробника
-    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *)"MyBrand");
-    // Записуємо в кластер назву моделі пристрою
-    esp_zb_basic_cluster_add_attr(basic_cluster, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *)"SimpleRouter_H2");
-
-    // 3. Збірка всього цього в Ендпоінт
-    // Створюємо порожній список кластерів для нашого ендпоінта
+    // Створюю загальний список ендпоінтів
+    esp_zb_ep_list_t *endpoint_list = esp_zb_ep_list_create();
+    // Створюю загальний список кластерів
     esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
-    // Додаємо туди наш створений базовий кластер (у ролі сервера)
-    esp_zb_cluster_list_add_basic_cluster(cluster_list, basic_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    // Створюю кластер рівня освітленості
+    esp_zb_level_cluster_cfg_t level_cluster_cfg = { .current_level = 0x0}; 
+    // Створюю кластер включення/вимкнення
+    esp_zb_on_off_cluster_cfg_t on_off_cluster_cfg = { .on_off = false };
 
-    // Налаштовуємо параметри самого ендпоінта
-    esp_zb_endpoint_config_t ep_cfg = {
-        .endpoint = 1,                                       // Наш ендпоінт буде під номером 1
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,           // Використовуємо профіль Home Automation (HA)
-        .app_device_id = ESP_ZB_HA_RANGE_EXTENDER_DEVICE_ID, // Вказуємо тип пристрою: 0x0008 (Range Extender / Підсилювач сигналу)
-        .app_device_version = 1,                             // Версія прошивки/заліза
+    
+    // Додаю кластер Level Control до списку кластерів роутера
+    esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_level_cluster_create(&level_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    // Додаю кластер On/Off до списку кластерів роутера
+    esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_on_off_cluster_create(&on_off_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    
+    // Створюю ендпоінт для пристрою
+    esp_zb_endpoint_config_t level_endpoint_config = { 
+        .endpoint = 2, 
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, 
+        .app_device_id = ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID, 
+        .app_device_version = 1
     };
-    
-    // створюю свої ендпоінти
-    // ------------------
-    // створюю свої ендпоінти
-    // ------------------
-    
 
-    // Створюємо загальний список ендпоінтів пристрою (у нас він один)
-    esp_zb_ep_list_t *ep_list = esp_zb_ep_list_create();
-    // Додаємо наш ендпоінт №1 до списку
-    esp_zb_ep_list_add_ep(ep_list, cluster_list, ep_cfg);
-    
-    // Офіційно реєструємо наш віртуальний пристрій у стеку Zigbee
-    esp_zb_device_register(ep_list);
+    esp_zb_ep_list_add_ep(endpoint_list, cluster_list, level_endpoint_config);
 
-    // 4. Запуск і нескінченний цикл
-    ESP_LOGI(TAG, "Запуск стека Zigbee (роутер)...");
-    esp_zb_start(false); // Стартуємо Zigbee
+    esp_zb_device_register(endpoint_list); 
 
-    // Нескінченний цикл, який підтримує роботу Zigbee
+    esp_zb_core_action_handler_register(zb_action_handler);
+
+    ESP_LOGI(TAG, "Запуск стека Zigbee");
+    esp_zb_start(false);
+
     while (1) {
-        esp_zb_stack_main_loop_iteration(); // Дозволяємо стеку обробити свої внутрішні задачі
-        vTaskDelay(pdMS_TO_TICKS(10));      // Віддаємо процесорний час іншим задачам на 10 мілісекунд, щоб не перевантажувати ядро
+        esp_zb_stack_main_loop_iteration();
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -149,4 +159,5 @@ void app_main(void) {
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)
     xTaskCreate(zigbee_task, "zigbee_task", 4096, NULL, 5, NULL);
+    console_handler_start(); // Запускаємо задачу для обробки консолі (якщо вона є)
 }
