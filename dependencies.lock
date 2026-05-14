@@ -34,6 +34,6 @@ direct_dependencies:
 - espressif/esp-zigbee-lib
 - examples_utils
 - idf
-manifest_hash: 38eb32e2be3bf4f2f2c09e19faf9839c08bb3d3d2a1a18b57f8157ba44d91370
+manifest_hash: 8dbf57cee7c24f0dc84e6ab5da0b0fa80feae6ab97a6e4f4db980d844fca172a
 target: esp32h2
 version: 2.0.0

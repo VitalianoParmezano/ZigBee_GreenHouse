@@ -1,4 +1,7 @@
 #include "console_handler.h"
+#include "endpoint_config.h"             // Файл з функцією для створення списку ендпоінтів пристрою
+
+
 #include "esp_log.h"                  // Бібліотека для виводу логів у консоль
 #include "nvs_flash.h"                // Бібліотека для роботи з енергонезалежною пам'яттю (NVS), де Zigbee зберігає мережеві дані
 #include "freertos/FreeRTOS.h"        // Головна бібліотека операційної системи реального часу FreeRTOS
@@ -96,28 +99,8 @@ static void zigbee_task(void *arg) {
 
     // Створюю загальний список ендпоінтів
     esp_zb_ep_list_t *endpoint_list = esp_zb_ep_list_create();
-    // Створюю загальний список кластерів
-    esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
-    // Створюю кластер рівня освітленості
-    esp_zb_level_cluster_cfg_t level_cluster_cfg = { .current_level = 0x0}; 
-    // Створюю кластер включення/вимкнення
-    esp_zb_on_off_cluster_cfg_t on_off_cluster_cfg = { .on_off = false };
 
-    
-    // Додаю кластер Level Control до списку кластерів роутера
-    esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_level_cluster_create(&level_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    // Додаю кластер On/Off до списку кластерів роутера
-    esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_on_off_cluster_create(&on_off_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    
-    // Створюю ендпоінт для пристрою
-    esp_zb_endpoint_config_t level_endpoint_config = { 
-        .endpoint = 2, 
-        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, 
-        .app_device_id = ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID, 
-        .app_device_version = 1
-    };
-
-    esp_zb_ep_list_add_ep(endpoint_list, cluster_list, level_endpoint_config);
+    create_greenhouse_light_endpoint_list(endpoint_list); // Функція для заповнення списку ендпоінтів (створена в endpoint_config.c)
 
     esp_zb_device_register(endpoint_list); 
 
