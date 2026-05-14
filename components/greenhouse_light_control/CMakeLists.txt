@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS 
-       "endpoint_config.c"
-      
+        "endpoint_config.c"
+        "light_driver.c"
     INCLUDE_DIRS 
         "include" 
     PRIV_REQUIRES 

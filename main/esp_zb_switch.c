@@ -1,6 +1,6 @@
 #include "console_handler.h"
 #include "endpoint_config.h"             // Файл з функцією для створення списку ендпоінтів пристрою
-
+#include "light_driver.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
 
 #include "esp_log.h"                  // Бібліотека для виводу логів у консоль
 #include "nvs_flash.h"                // Бібліотека для роботи з енергонезалежною пам'яттю (NVS), де Zigbee зберігає мережеві дані
@@ -74,6 +74,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
                 //light_driver_set_brightness(attr_msg->info.dst_endpoint, level);
+                light_driver_set_level(attr_msg->info.dst_endpoint, level);
                 ESP_LOGI(TAG, "Нова яскравість: %d на ендпоінті: %d", level, attr_msg->info.dst_endpoint);
             }
         }
@@ -127,6 +128,8 @@ void app_main(void) {
         ESP_ERROR_CHECK(nvs_flash_erase()); // Повністю стираємо її
         ESP_ERROR_CHECK(nvs_flash_init());  // І ініціалізуємо заново
     }
+
+    light_driver_init(); // Ініціалізуємо драйвер світла
 
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)

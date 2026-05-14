@@ -1,7 +1,8 @@
 #include "endpoint_config.h"
 
 static const char *TAG = "ENDPOINT_CONFIG"; 
-
+// Зсув номерів ендпоінтів каналів
+#define SHIFT 1
 
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 {
@@ -18,7 +19,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     esp_zb_cluster_list_add_basic_cluster(cluster_list_zero, esp_zb_basic_cluster_create(&basic_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_ep_list_add_ep(ep_list, cluster_list_zero, (esp_zb_endpoint_config_t){
-        .endpoint = 0,
+        .endpoint = 1, // Ендпоінт 1 для Basic Cluster
         .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
         .app_device_id = ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID,
         .app_device_version = 1
@@ -42,7 +43,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 
         //Конфігурація самого Ендпоінта
         esp_zb_endpoint_config_t level_endpoint_config = { 
-            .endpoint = i, 
+            .endpoint = i + SHIFT, // Зсув для каналів
             .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, 
             .app_device_id = ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID, 
             .app_device_version = 1
