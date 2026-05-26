@@ -1,12 +1,14 @@
 #include "console_handler.h"
 #include "endpoint_config.h"             // Файл з функцією для створення списку ендпоінтів пристрою
 #include "light_driver.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
+#include "reset_configuration.h"         // Файл з функцією для налаштування кнопки скидання
 
 #include "esp_log.h"                  // Бібліотека для виводу логів у консоль
 #include "nvs_flash.h"                // Бібліотека для роботи з енергонезалежною пам'яттю (NVS), де Zigbee зберігає мережеві дані
 #include "freertos/FreeRTOS.h"        // Головна бібліотека операційної системи реального часу FreeRTOS
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
+
 
 static const char *TAG = "Light_Router"; 
 
@@ -130,6 +132,7 @@ void app_main(void) {
     }
 
     light_driver_init(); // Ініціалізуємо драйвер світла
+    init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
 
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)

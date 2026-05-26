@@ -12,9 +12,9 @@ static const char *TAG = "ENDPOINT_CONFIG";
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 {
     //  Готуємо дані (Pascal strings - перший байт довжина)
-    uint8_t model_id[] = {3, 'E', 'S', 'V'};
-    uint8_t manufacturer_name[] = {9, 'E', 's', 'p', 'r', 'e', 's', 's', 'i', 'f'};
-    uint8_t basic_product_label[] = {5, 'F', 'i', 'r', 's', 't'}; // Просто приклад, можна замінити на реальний
+    uint8_t model_id[] = {24, 'G', 'r', 'e', 'e', 'n', 'h', 'o', 'u', 's', 'e', '_', 'C', 'o', 'n', 't', 'r', 'o', 'l', 'l', 'e', 'r', '_', 'v', '1'};
+    uint8_t manufacturer_name[] = {3, 'E', 'S', 'V'};
+    uint8_t basic_product_label[] = {5, 'F', 'i', 'r', 's', 't'}; 
     uint8_t hw_version = 1;
 
     //  Створюємо конфіг для базових параметрів (ZCL version, Power Source)
@@ -31,7 +31,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_id);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, manufacturer_name);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);
-    esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_PRODUCT_LABEL_ID, &basic_product_label);
+    esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_PRODUCT_LABEL_ID, basic_product_label);
 
     // Створюємо список кластерів для ендпоінта
     esp_zb_cluster_list_t *cluster_list_first = esp_zb_zcl_cluster_list_create();
@@ -91,21 +91,6 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         // Profile ID зазвичай виводять у HEX (наприклад, 0x0104 - це Home Automation)
         printf("    Profile ID:      0x%04X\n", ep->profile_id);
         
-        // Simple Descriptor - це найважливіша частина, там зберігається тип пристрою
-        if (ep->simple_desc != NULL) {
-            printf("    Device ID:       0x%04X\n", ep->simple_desc->app_device_id);
-            printf("    Device Version:  %d\n", ep->simple_desc->app_device_version);
-        } else {
-            printf("    Simple Desc:     NULL (Не ініціалізовано)\n");
-        }
-
-        // Статистика кластерів та репортінгу
-        printf("    К-ть кластерів:  %d\n", ep->cluster_count);
-        printf("    Слоти репортінгу:%d\n", ep->rep_info_count);
-        
-        // Перевірка, чи зареєстровані обробники подій (handlers)
-        printf("    Device Handler:  %s\n", ep->device_handler ? "Встановлено" : "Немає");
-        printf("    Identify Handler:%s\n", ep->identify_handler ? "Встановлено" : "Немає");
 
         // Переходимо до наступного вузла у списку
         temp = temp->next;
@@ -114,4 +99,3 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     printf("Усього ендпоінтів: %d\n", counter - 1);
     
 }
-

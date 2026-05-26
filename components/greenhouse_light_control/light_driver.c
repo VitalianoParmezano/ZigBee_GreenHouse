@@ -14,9 +14,16 @@ static const char *TAG = "LIGHT_DRIVER";
 
 static led_strip_handle_t s_led_strip;
 
+bool light_driver_init_done = false;
+
 static uint8_t s_red = 0, s_green = 0, s_blue = 0;
 
 void light_driver_init(void){
+
+    if (light_driver_init_done) {
+        ESP_LOGW(TAG, "Light driver is already initialized");
+        return;
+    }
 
         led_strip_config_t led_strip_conf = {
         .max_leds = 1,
@@ -26,7 +33,7 @@ void light_driver_init(void){
         .resolution_hz = 10 * 1000 * 1000,
     };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&led_strip_conf, &rmt_conf, &s_led_strip));
-    
+    light_driver_init_done = true;
     // Стандартний стан після ініціалізації
     s_red = 0; s_green = 0; s_blue = 0;
 

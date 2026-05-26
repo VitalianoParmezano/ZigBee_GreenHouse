@@ -19,6 +19,8 @@ void light_driver_init(void);
  */
 void light_driver_set_level(int endpoint_id, uint8_t brightness);
 
+
+
 #ifdef __cplusplus
 }
 #endif
