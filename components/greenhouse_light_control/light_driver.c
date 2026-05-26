@@ -12,6 +12,7 @@ static const char *TAG = "LIGHT_DRIVER";
 #define LEDC_DUTY_RES           LEDC_TIMER_8_BIT 
 #define LEDC_FREQUENCY          (5000)   
 
+static TaskHandle_t s_blink_task_handle = NULL; // Для таски з блиманням світла/ щоб не запустити повторно
 static led_strip_handle_t s_led_strip;
 
 bool light_driver_init_done = false;
@@ -62,4 +63,64 @@ void light_driver_set_level(int endpoint_id, uint8_t brightness)
 
     ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_red, s_green, s_blue));
     ESP_ERROR_CHECK(led_strip_refresh(s_led_strip));
+}
+
+void light_driver_turn_off(void)
+{
+    s_red = s_green = s_blue = 0;
+    ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_red, s_green, s_blue));
+    ESP_ERROR_CHECK(led_strip_refresh(s_led_strip));
+}
+
+
+static void light_driver_blink_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "Таску блимання успішно запущено.");
+    while (1) {
+        // Вмикаємо червоний колір
+        led_strip_set_pixel(s_led_strip, 0, 255, 0, 0);
+        led_strip_refresh(s_led_strip);
+        vTaskDelay(pdMS_TO_TICKS(200)); 
+
+        // Вимикаємо світлодіод
+        led_strip_set_pixel(s_led_strip, 0, 0, 0, 0);
+        led_strip_refresh(s_led_strip);
+        vTaskDelay(pdMS_TO_TICKS(500)); 
+    }
+}
+
+// Функція для СТАРТУ блимання
+void light_driver_blink_start(void)
+{
+    // Перевіряємо, чи таска ВЖЕ не запущена, щоб не створити дублікат
+    if (s_blink_task_handle == NULL) {
+        xTaskCreate(
+            light_driver_blink_task,   // Функція таски
+            "light_blink_task",        // Назва для дебагу
+            2048,                      // Розмір стеку
+            NULL,                      // Параметри
+            5,                         // Пріоритет
+            &s_blink_task_handle       // ПЕРЕДАЮ АДРЕСУ ХЕНДЛА, щоб зберегти його
+        );
+        ESP_LOGI(TAG, "Створено нову таску блимання.");
+    } else {
+        ESP_LOGW(TAG, "Таска блимання вже працює, ігноруємо повторний старт.");
+    }
+}
+
+// Функція для ЗУПИНКИ блимання
+void light_driver_blink_stop(void)
+{
+    if (s_blink_task_handle != NULL) {
+        vTaskDelete(s_blink_task_handle); // Видаляємо таску зі стеку операційної системи
+        s_blink_task_handle = NULL;        // Обов'язково зануляємо хендл!
+        
+        // Гарантовано вимикаємо світлодіод після зупинки
+        led_strip_set_pixel(s_led_strip, 0, 0, 0, 0);
+        led_strip_refresh(s_led_strip);
+        
+        ESP_LOGI(TAG, "Таску блимання зупинено, світлодіод вимкнено.");
+    } else {
+        ESP_LOGW(TAG, "Спроба зупинити блимання, яке не було запущене.");
+    }
 }
