@@ -7,6 +7,7 @@
 #include "light_driver.h"
 #include "freertos/FreeRTOS.h"
 #include "esp_zigbee_core.h"
+#include "dip_switch.h"
 // #include "esp_zigbee_zdo_command.h"
 
 static bool reset_configuration_initialized = false;
@@ -32,9 +33,10 @@ static void button_single_click_cb(void *arg, void *usr_data)
         //TODO: ПОТІМ ЗМІНИТИ! БЕЗ МАГІЧНИХ ЧИСЕЛ! 
         light_driver_turn_off(); // Вимикаємо світло, щоб було зрозуміло, що ми вийшли з мережі
         // Зчитуємо та виводимо конфігурацію DIP-свічів
-        //uint8_t dip_val = read_dip_switches();
+        uint8_t dip_val = calculate_dip_switch_value();
+
         ESP_LOGW(TAG, "===============================================");
-        //ESP_LOGW(TAG, "ПОТОЧНА КОНФІГУРАЦІЯ DIP SWITCH: 0x%02X", dip_val);
+        ESP_LOGW(TAG, "ПОТОЧНА КОНФІГУРАЦІЯ DIP SWITCH: 0x%02X", dip_val);
         ESP_LOGW(TAG, "Виконується повне очищення пам'яті Zigbee та перезавантаження...");
         ESP_LOGW(TAG, "===============================================");
 
@@ -48,39 +50,50 @@ static void button_single_click_cb(void *arg, void *usr_data)
 
 static void button_long_press_1_cb(void *arg, void *usr_data)
 {
-    ESP_LOGW(TAG, "Утримування кнопки зафіксовано! Запуск від'єднання...");
+    ESP_LOGW(TAG, "Утримування кнопки зафіксовано!");
 
-    light_driver_blink_start(); // Запускаємо вічне червоне блимання
+    light_driver_blink_start(); // Запускаємо блимання
 
-    static esp_zb_zdo_mgmt_leave_req_param_t leave_req;
-    memset(&leave_req, 0, sizeof(esp_zb_zdo_mgmt_leave_req_param_t));
+    // Перевіряємо, чи ми взагалі маємо щось очищати в пам'яті
+    if (!esp_zb_bdb_is_factory_new()) {
+        ESP_LOGW(TAG, "Пристрій має збережену мережу. Запуск локального від'єднання...");
+        
+        static esp_zb_zdo_mgmt_leave_req_param_t leave_req;
+        memset(&leave_req, 0, sizeof(esp_zb_zdo_mgmt_leave_req_param_t));
 
-    leave_req.dst_nwk_addr = esp_zb_get_short_address(); 
-    leave_req.rejoin = 0;
-    leave_req.remove_children = 0;
-    esp_zb_get_long_address(leave_req.device_address);
+        // Фікс №1: Кажемо "локально" або "броадкаст", а не свій шорт-адрес
+        leave_req.dst_nwk_addr = 0xFFFF; 
+        leave_req.rejoin = 0;
+        leave_req.remove_children = 0;
+        esp_zb_get_long_address(leave_req.device_address);
 
-    // Мутекс
-    esp_zb_lock_acquire(portMAX_DELAY);
-    esp_zb_zdo_device_leave_req(&leave_req, my_zigbee_leave_callback, NULL);
-    esp_zb_lock_release();
+        esp_zb_lock_acquire(portMAX_DELAY);
+        esp_zb_zdo_device_leave_req(&leave_req, my_zigbee_leave_callback, NULL);
+        esp_zb_lock_release();
+    } else {
+        // Якщо пристрій і так "з коробки", просто дозволяємо зміну конфігурації
+        ESP_LOGI(TAG, "Пристрій вже у стані Factory New. Мережевий скид не потрібен.");
+        my_zigbee_leave_callback(ESP_ZB_ZDP_STATUS_SUCCESS, NULL);
+    }
 
     reset_configuration_initialized = true; 
 }
 
-
 void init_reset_configuration(void)
 {
     // Створення конфігурації кнопки
-    const button_config_t btn_cfg = {0};
-    
+    button_config_t btn_cfg = {
+            .long_press_time = LONG_PRESS_TIME_MS, 
+            .short_press_time = SHORT_PRESS_TIME_MS, 
+        };    
     const button_gpio_config_t btn_gpio_cfg = {
         .gpio_num = BUTTON_GPIO,
         .active_level = 0,
     };
 
     button_handle_t gpio_btn = NULL;
-    esp_err_t ret = iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &gpio_btn);
+    iot_button_new_gpio_device(&btn_cfg, &btn_gpio_cfg, &gpio_btn);
+
     
     if(NULL == gpio_btn) {
         ESP_LOGE(TAG, "Button create failed");

@@ -2,12 +2,14 @@
 #include "endpoint_config.h"             // Файл з функцією для створення списку ендпоінтів пристрою
 #include "light_driver.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
 #include "reset_configuration.h"         // Файл з функцією для налаштування кнопки скидання
+#include "dip_switch.h"
 
 #include "esp_log.h"                  // Бібліотека для виводу логів у консоль
 #include "nvs_flash.h"                // Бібліотека для роботи з енергонезалежною пам'яттю (NVS), де Zigbee зберігає мережеві дані
 #include "freertos/FreeRTOS.h"        // Головна бібліотека операційної системи реального часу FreeRTOS
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
+
 
 
 static const char *TAG = "Light_Router"; 
@@ -131,11 +133,14 @@ void app_main(void) {
         ESP_ERROR_CHECK(nvs_flash_init());  // І ініціалізуємо заново
     }
 
+    dip_switch_init(); // Ініціалізуємо GPIO для Діп свіча
     light_driver_init(); // Ініціалізуємо драйвер світла
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
 
+    ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", calculate_dip_switch_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)
     xTaskCreate(zigbee_task, "zigbee_task", 4096, NULL, 5, NULL);
-    console_handler_start(); // Запускаємо задачу для обробки консолі (якщо вона є)
+    
+    //console_handler_start(); // Запускаємо задачу для обробки консолі (якщо вона є)
 }

@@ -77,15 +77,15 @@ static void light_driver_blink_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Таску блимання успішно запущено.");
     while (1) {
-        // Вмикаємо червоний колір
-        led_strip_set_pixel(s_led_strip, 0, 255, 0, 0);
+        // Вмикаємо синій колір
+        led_strip_set_pixel(s_led_strip, 0, 0, 0, 255);
         led_strip_refresh(s_led_strip);
         vTaskDelay(pdMS_TO_TICKS(200)); 
 
         // Вимикаємо світлодіод
         led_strip_set_pixel(s_led_strip, 0, 0, 0, 0);
         led_strip_refresh(s_led_strip);
-        vTaskDelay(pdMS_TO_TICKS(500)); 
+        vTaskDelay(pdMS_TO_TICKS(800)); 
     }
 }
 
