@@ -2,4 +2,4 @@
 
 void dip_switch_init(void);
 
-uint8_t calculate_dip_switch_value(void);
+uint8_t dip_switch_get_value(void);

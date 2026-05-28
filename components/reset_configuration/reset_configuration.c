@@ -26,14 +26,14 @@ static void my_zigbee_leave_callback(esp_zb_zdp_status_t zdo_status, void *user_
 
 static void button_single_click_cb(void *arg, void *usr_data)
 {
-    ESP_LOGI(TAG, "Кнопку натиснуто! (Один клік)");
+    ESP_LOGD(TAG, "Кнопку натиснуто! (Один клік)");
 
     if (reset_configuration_initialized) {
         light_driver_blink_stop();       
         //TODO: ПОТІМ ЗМІНИТИ! БЕЗ МАГІЧНИХ ЧИСЕЛ! 
         light_driver_turn_off(); // Вимикаємо світло, щоб було зрозуміло, що ми вийшли з мережі
         // Зчитуємо та виводимо конфігурацію DIP-свічів
-        uint8_t dip_val = calculate_dip_switch_value();
+        uint8_t dip_val = dip_switch_get_value();
 
         ESP_LOGW(TAG, "===============================================");
         ESP_LOGW(TAG, "ПОТОЧНА КОНФІГУРАЦІЯ DIP SWITCH: 0x%02X", dip_val);
@@ -50,8 +50,6 @@ static void button_single_click_cb(void *arg, void *usr_data)
 
 static void button_long_press_1_cb(void *arg, void *usr_data)
 {
-    ESP_LOGW(TAG, "Утримування кнопки зафіксовано!");
-
     light_driver_blink_start(); // Запускаємо блимання
 
     // Перевіряємо, чи ми взагалі маємо щось очищати в пам'яті
@@ -61,7 +59,8 @@ static void button_long_press_1_cb(void *arg, void *usr_data)
         static esp_zb_zdo_mgmt_leave_req_param_t leave_req;
         memset(&leave_req, 0, sizeof(esp_zb_zdo_mgmt_leave_req_param_t));
 
-        // Фікс №1: Кажемо "локально" або "броадкаст", а не свій шорт-адрес
+        // "локально" або "броадкаст", а не свій шорт-адрес
+        // Оце питання перевірити
         leave_req.dst_nwk_addr = 0xFFFF; 
         leave_req.rejoin = 0;
         leave_req.remove_children = 0;

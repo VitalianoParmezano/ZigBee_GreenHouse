@@ -5,8 +5,14 @@
 
 static const char *TAG = "DIP_SWITCH";
 static const int DIP_SWITCH_GPIO_BASE[] = {10, 11, 12};
+static uint8_t dip_switch_value = 255; 
+static bool dip_switch_initialized = false;
 
     void dip_switch_init(void) {
+    if (dip_switch_initialized) {
+        ESP_LOGI(TAG, "DIP switch already initialized.");
+        return;
+    }
         // Ініціалізація GPIO для DIP-перемикачів
         for (int i = 0; i < sizeof(DIP_SWITCH_GPIO_BASE) / sizeof(DIP_SWITCH_GPIO_BASE[0]); i++) {
             int gpio_num = DIP_SWITCH_GPIO_BASE[i];
@@ -14,12 +20,18 @@ static const int DIP_SWITCH_GPIO_BASE[] = {10, 11, 12};
             gpio_set_direction(gpio_num, GPIO_MODE_INPUT);
             gpio_set_pull_mode(gpio_num, GPIO_PULLUP_ONLY); // Використовуємо внутрішній підтягуючий резистор
         }
+        dip_switch_initialized = true;
     }
 
-uint8_t calculate_dip_switch_value(void){
+uint8_t dip_switch_get_value(void){
 
-    uint8_t dip_switch_value = 0;
+    if (dip_switch_value != 255) {
+        ESP_LOGI(TAG, "DIP switch value already calculated: %d", dip_switch_value);
+        return dip_switch_value;
+    }
 
+    dip_switch_value = 0; // Скидаємо значення перед обчисленням
+    
     // Читаємо стан кожного DIP-перемикача і формуємо одне число
     for (int i = 0; i < sizeof(DIP_SWITCH_GPIO_BASE) / sizeof(DIP_SWITCH_GPIO_BASE[0]); i++) {
         int gpio_num = DIP_SWITCH_GPIO_BASE[i];

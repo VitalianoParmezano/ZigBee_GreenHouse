@@ -47,6 +47,7 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
                 ESP_LOGI(TAG, "✅ Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
                 // Далі робити нічого не треба — пристрій автоматично працює як ретранслятор у фоновому режимі
+                assign_internal_groups_after_join(); // Викликаємо функцію для призначення груп після приєднання до мережі
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
                 ESP_LOGW(TAG, "❌ Пошук мережі невдалий. Повторна спроба через 5 секунд...");
@@ -137,7 +138,7 @@ void app_main(void) {
     light_driver_init(); // Ініціалізуємо драйвер світла
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
 
-    ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", calculate_dip_switch_value());
+    ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)
     xTaskCreate(zigbee_task, "zigbee_task", 4096, NULL, 5, NULL);
