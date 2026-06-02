@@ -1,80 +1,95 @@
 /**
  * Greenhouse Auto Grouper Extension
+ * Версія на базі подій StateChange
  */
 class AutoGrouper {
-    constructor(zigbee, mqtt, state, publishEntityState, eventBus, settings, logger) {
+    // Нам знадобиться об'єкт state, щоб читати поточний стан пристрою
+    constructor(zigbee, _2, state, _4, eventBus) {
         this.zigbee = zigbee;
         this.eventBus = eventBus;
-        this.logger = logger;
+        this.state = state; 
     }
 
     start() {
-        this.logger.info('🌿 Greenhouse Auto Grouper started!');
-        this.onDeviceMessage = this.onDeviceMessage.bind(this);
-        this.eventBus.on('deviceMessage', this.onDeviceMessage);
+        console.log('🌿 [AutoGrouper] STARTED. Listening for state changes...');
+
+        console.log(`🌿 застосовано зміни 12`);
+        // ПРАВИЛЬНА ПОДІЯ: onStateChange
+        //this.eventBus.onStateChange(this, this.onStateChange.bind(this));
+
+        this.eventBus.onDeviceInterview(this, this.onDeviceInterview.bind(this));
+        
+        this.eventBus.onDeviceJoined(this, this.onDeviceJoined.bind(this));
+
+        this.eventBus.onDeviceConfigure
     }
+
 
     stop() {
-        this.eventBus.removeListener('deviceMessage', this.onDeviceMessage);
+        this.eventBus.removeListeners(this);
+        console.log('🌿 [AutoGrouper] STOPPED.');
     }
 
-    // Використовуємо async, бо робота з групами в Z2M асинхронна
-    async onDeviceMessage(data) {
-        // data.device — це Z2M обгортка (Device wrapper)
+
+async onDeviceJoined(data) {
+    const device = data.device;
+
+    console.log(`🌿 [AutoGrouper] Device joined: ${data.device.ieeeAddr}`);
+
+}    
+
+
+async onDeviceInterview(data) {
+
+        if (data.status !== 'successful') {
+            console.log(`🌿 [AutoGrouper] Device interview event: status: ${data.status}. Skipping...`);
+            return;
+        }
+        
+
+        console.log(`🌿 [AutoGrouper] Device interview event: status: ${data.status}. Processing...`);
+        
         const device = data.device;
 
-        if (!device || device.modelID !== 'Greenhouse_Controller_v1') return;
+        // Перевірка моделі (на етапі successful вона вже точно є)
 
-        // .zh — це доступ до низькорівневого zigbee-herdsman пристрою
-        const zhDevice = device.zh;
-        const basicEndpoint = zhDevice.getEndpoint(1);
-        if (!basicEndpoint) return;
+        console.log(`\n🌿 [AutoGrouper] =======================================`);
+        console.log(`🌿 [AutoGrouper] 🎯 Interview successful for: ${device.ieeeAddr}`);
+        console.log(`🌿 [AutoGrouper] 🔍 Model: ${device.zh.modelID}`);
 
-        const productLabel = basicEndpoint.clusters?.genBasic?.attributes?.productLabel;
-        if (!productLabel) return;
 
-        const dipVal = parseInt(productLabel, 10);
-        if (isNaN(dipVal)) return;
+        // 1. Отримуємо низькорівневий ендпоінт 1
+        const basicEndpoint = device.zh.getEndpoint(1);
 
-        const channelEndpoints = zhDevice.endpoints.filter(ep => ep.ID > 1);
+        if (basicEndpoint) {
+            try {
+                console.log(`🌿 [AutoGrouper] Надсилаю радіозапит на зчитування productLabel...`);
 
-        for (const ep of channelEndpoints) {
-            // Твоя формула
-            const targetGroupId = (dipVal * 10) + ep.ID;
+                // 2. Викликаємо метод .read(Кластер, [МасивАтрибутів])
+                // Ця команда змушує координатор відправити сирий Zigbee-пакет у повітря
+                const result = await basicEndpoint.read('genBasic', ['productLabel']);
 
-            // getGroupByID повертає Z2M обгортку (Group wrapper)
-            let group = this.zigbee.getGroupByID(targetGroupId);
+                // 3. Результат повертається у вигляді простісінького об'єкта
+                console.log(`🌿 [AutoGrouper] Результат зчитування:`, result);
+                
+                const myLabel = result?.productLabel;
+                console.log(`🌿 [AutoGrouper] Значення атрибута: "${myLabel}"`);
 
-            if (!group) {
-                const groupName = `Zone_${dipVal}_Ch_${ep.ID}`;
-                this.logger.info(`🌿 Creating Z2M Group: ID ${targetGroupId} (${groupName})`);
-                this.zigbee.createGroup(targetGroupId, groupName);
-                group = this.zigbee.getGroupByID(targetGroupId);
-            }
-
-            // Використовуємо group.zh.hasMember, як в оригінальному ядрі
-            if (group && !group.zh.hasMember(ep)) {
-                this.logger.info(`🌿 Adding EP:${ep.ID} to Group ${targetGroupId}`);
-
-                try {
-                    // 1. Асинхронно додаємо ендпоінт до групи (через .zh)
-                    await ep.addToGroup(group.zh);
-
-                    // 2. СИГНАЛ ДЛЯ ІНТЕРФЕЙСУ (Взято з groups.ts)
-                    // Саме це змусить Z2M негайно оновити вкладку Exposes
-                    this.eventBus.emitGroupMembersChanged({
-                        group: group,
-                        action: 'add',
-                        endpoint: ep,
-                        skipDisableReporting: false
-                    });
-
-                } catch (error) {
-                    this.logger.error(`🌿 Failed to add to group: ${error.message}`);
-                }
+            } catch (error) {
+                // Якщо пристрій спить або вимкнений — запит скинеться по таймауту
+                console.error(`🌿 [AutoGrouper] Помилка читання з ефіру: ${error.message}`);
             }
         }
+        
+
+
+        
+        
+
+        console.log(`🌿 [AutoGrouper] =======================================\n`);
     }
 }
+
+
 
 module.exports = AutoGrouper;
