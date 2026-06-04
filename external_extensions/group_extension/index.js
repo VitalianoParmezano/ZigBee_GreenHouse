@@ -1,11 +1,16 @@
 /**
- * Greenhouse Auto Grouper Extension
- * Версія на базі подій StateChange
+
+Версія не робоча,
+не можна з середини екстеншину
+відправляти MQTT запити 
+(це зроблено для запобігання циклічним залежностям та багам у Z2M)
+
  */
 class AutoGrouper {
     // Нам знадобиться об'єкт state, щоб читати поточний стан пристрою
-    constructor(zigbee, _2, state, _4, eventBus) {
+    constructor(zigbee, mqtt, state, _4, eventBus) {
         this.zigbee = zigbee;
+        this.mqtt = mqtt;
         this.eventBus = eventBus;
         this.state = state; 
     }
@@ -13,7 +18,7 @@ class AutoGrouper {
     start() {
         console.log('🌿 [AutoGrouper] STARTED. Listening for state changes...');
 
-        console.log(`🌿 застосовано зміни 12`);
+        console.log(`🌿 застосовано зміни 28`);
         // ПРАВИЛЬНА ПОДІЯ: onStateChange
         //this.eventBus.onStateChange(this, this.onStateChange.bind(this));
 
@@ -60,6 +65,7 @@ async onDeviceInterview(data) {
 
         // 1. Отримуємо низькорівневий ендпоінт 1
         const basicEndpoint = device.zh.getEndpoint(1);
+        var myLabel;
 
         if (basicEndpoint) {
             try {
@@ -72,7 +78,7 @@ async onDeviceInterview(data) {
                 // 3. Результат повертається у вигляді простісінького об'єкта
                 console.log(`🌿 [AutoGrouper] Результат зчитування:`, result);
                 
-                const myLabel = result?.productLabel;
+                myLabel = result?.productLabel;
                 console.log(`🌿 [AutoGrouper] Значення атрибута: "${myLabel}"`);
 
             } catch (error) {
@@ -82,7 +88,120 @@ async onDeviceInterview(data) {
         }
         
 
+        const endpoints = device.zh.endpoints; 
+        console.log(`🌿 [AutoGrouper] Виявлено ендпоінтів: ${endpoints.length}`);
+        console.log(`🌿 [AutoGrouper] Список ендпоінтів: ${endpoints.map(ep => ep.ID).join(', ')}`);
 
+
+        // Замість жорсткого циклу 1..3, ітеруємося по реальних ендпоінтах пристрою
+        // (якщо вам потрібні лише перші 3 канали, можна обмежити index < 3)
+        for (let i = 0; i < Math.min(endpoints.length); i++) {
+            const endpoint = endpoints[i];
+            const endpointID = endpoint.ID;
+            
+            console.log(`\n🌿 [AutoGrouper] Перевіряємо ендпоінт ID: ${endpointID}...`);
+            // Пропускаємо ендпоінт координатора або специфічні службові ендпоінти (наприклад, GreenPower)
+            if (endpointID === 242 || endpointID === 0 || endpointID === 1) continue;
+
+            const channelNumber = i + 1; // Для назви каналу (1, 2, 3)
+            const group_ID = Number(myLabel) * 10 + channelNumber; 
+            const channelName = `l${channelNumber}`;
+            const groupName = `Zone_${myLabel}_${channelName}`;
+
+            console.log(`\n🌿 [AutoGrouper] === Обробка групи ${groupName} (ID: ${group_ID}) ===`);
+
+            // ==========================================
+            // КРОК 1: Створення групи
+            // ==========================================
+            const createGroupPayload = {
+                friendly_name: groupName,
+                id: group_ID
+            };
+            
+            console.log(`🌿 [AutoGrouper] 1. Надсилаємо запит на створення групи...`);
+            this.eventBus.emit('mqttMessage', {
+                topic: 'bridge/request/group/add',
+                message: JSON.stringify({ friendly_name: groupName, id: String(group_ID) })
+            });
+
+            
+            console.log(`🌿 [AutoGrouper] Осьтакйи запит відправлено: \n ${JSON.stringify(createGroupPayload)}`);
+
+
+            // Чекаємо фіксації групи в базі даних Z2M
+            await new Promise(resolve => setTimeout(resolve, 600));
+
+            // ==========================================
+            // КРОК 2: Додавання через IEEE-адресу (надійніше ніж Friendly Name)
+            // ==========================================
+            const addMemberPayload = {
+                group: groupName,
+                device: `${device.ieeeAddr}/${endpointID}`, // IEEE адрес гарантує відсутність багів із символами
+                skip_disable_reporting: true
+            };
+
+    console.log(`🌿 [AutoGrouper] 2. Додаємо девайс ${device.ieeeAddr} (EP: ${endpointID}) у групу...`);
+    this.mqtt.publish(
+        'bridge/request/group/members/add', 
+        JSON.stringify(addMemberPayload)
+    );
+
+    // Пауза перед наступним пристроєм, щоб не забити Zigbee-ефір командами
+    await new Promise(resolve => setTimeout(resolve, 800));
+    console.log(`🌿 [AutoGrouper] 🟢 Завершено для каналу ${channelName}.`);
+}
+
+        // for (let i = 1; i <= 3; i++) {
+        //     const group_ID = Number(myLabel) * 10 + i; 
+        //     const channelName = `l${i}`;
+        //     const groupName = `Zone_${myLabel}_${channelName}`;
+        //     const endpointID = i + 1; 
+
+        //     // Перевіряємо, чи існує такий ендпоінт фізично
+        //     if (!device.zh.getEndpoint(endpointID)) continue;
+
+        //     console.log(`\n🌿 [AutoGrouper] === Обробка групи ${groupName} (ID: ${group_ID}) ===`);
+
+        //     // ==========================================
+        //     // КРОК 1: Створюємо групу через MQTT Bridge
+        //     // ==========================================
+        //     const createGroupPayload = {
+        //         friendly_name: groupName,
+        //         id: group_ID
+        //     };
+            
+        //     console.log(`🌿 [AutoGrouper] 1. Надсилаємо запит на створення групи...`);
+        //     this.mqtt.publish(
+        //         'zigbee2mqtt/bridge/request/group/add', 
+        //         JSON.stringify(createGroupPayload)
+        //     );
+
+        //     // Даємо ядру Z2M пів секунди на запис у базу database.db та configuration.yaml
+        //     // Це важливо, бо MQTT-запити асинхронні!
+        //     await new Promise(resolve => setTimeout(resolve, 500));
+
+        //     // ==========================================
+        //     // КРОК 2: Додаємо ендпоінт у групу через MQTT Bridge
+        //     // ==========================================
+        //     const addMemberPayload = {
+        //         group: groupName,
+        //         // Формат звернення до ендпоінта: "НазваПристрою/НомерЕндпоінта"
+        //         device: `${deviceFriendlyName}/${endpointID}`,
+        //         skip_disable_reporting: true
+        //     };
+
+        //     console.log(`🌿 [AutoGrouper] 2. Додаємо ендпоінт ${endpointID} у групу...`);
+        //     this.mqtt.publish(
+        //         'zigbee2mqtt/bridge/request/group/members/add', 
+        //         JSON.stringify(addMemberPayload)
+        //     );
+
+        //     // Даємо ще трохи часу на обробку перед наступною ітерацією циклу
+        //     await new Promise(resolve => setTimeout(resolve, 500));
+        //     console.log(`🌿 [AutoGrouper] 🟢 Завершено для каналу ${channelName}.`);
+        // }
+
+        
         
         
 
