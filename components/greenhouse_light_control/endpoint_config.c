@@ -131,6 +131,7 @@ void assign_internal_groups_after_join(void){
     for (int i = 1; i <= NUMBER_OF_CHANNEL_ENDPOINTS; i++)
     {
         uint8_t target_ep = i + SHIFT;
+	// Ця формула визначає ІД групи ендпоінта
         uint16_t target_group_id = dip_val * 10 + i + SHIFT; // 12 - 1 зона, 2 канал
 
         // Повністю розписана структура без трикрапок
