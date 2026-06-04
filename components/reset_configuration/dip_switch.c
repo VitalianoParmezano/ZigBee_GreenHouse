@@ -43,3 +43,8 @@ uint8_t dip_switch_get_value(void){
     return dip_switch_value;
 
 }
+
+void dip_switch_reset_value(void) {
+    dip_switch_value = 255; 
+    ESP_LOGI(TAG, "DIP switch value reset. It will be recalculated on next get_value call.");
+}

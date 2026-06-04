@@ -22,7 +22,7 @@ void light_driver_set_level(int endpoint_id, uint8_t brightness);
 void light_driver_blink_start(void);
 void light_driver_blink_stop(void);
 void light_driver_turn_off(void);
-
+void light_driver_blink_specific_times(uint8_t times);
 
 
 #ifdef __cplusplus

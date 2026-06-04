@@ -124,3 +124,18 @@ void light_driver_blink_stop(void)
         ESP_LOGW(TAG, "Спроба зупинити блимання, яке не було запущене.");
     }
 }
+
+void light_driver_blink_specific_times(uint8_t times)
+{
+    for (int i = 0; i < times; i++) {
+        // Вмикаємо зелений колір
+        led_strip_set_pixel(s_led_strip, 0, 0, 255, 0);
+        led_strip_refresh(s_led_strip);
+        vTaskDelay(pdMS_TO_TICKS(200)); 
+
+        // Вимикаємо світлодіод
+        led_strip_set_pixel(s_led_strip, 0, 0, 0, 0);
+        led_strip_refresh(s_led_strip);
+        vTaskDelay(pdMS_TO_TICKS(400)); 
+    }
+}

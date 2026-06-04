@@ -29,6 +29,9 @@ static void button_single_click_cb(void *arg, void *usr_data)
     ESP_LOGD(TAG, "Кнопку натиснуто! (Один клік)");
 
     if (reset_configuration_initialized) {
+        
+        dip_switch_reset_value(); // Скидаємо кешоване значення DIP-свічів, щоб при наступному запиті отримати актуальне
+
         light_driver_blink_stop();       
         //TODO: ПОТІМ ЗМІНИТИ! БЕЗ МАГІЧНИХ ЧИСЕЛ! 
         light_driver_turn_off(); // Вимикаємо світло, щоб було зрозуміло, що ми вийшли з мережі
@@ -39,6 +42,8 @@ static void button_single_click_cb(void *arg, void *usr_data)
         ESP_LOGW(TAG, "ПОТОЧНА КОНФІГУРАЦІЯ DIP SWITCH: 0x%02X", dip_val);
         ESP_LOGW(TAG, "Виконується повне очищення пам'яті Zigbee та перезавантаження...");
         ESP_LOGW(TAG, "===============================================");
+
+        light_driver_blink_specific_times(dip_val); // Блимнемо n разів, щоб користувач зрозумів, яка група була вибрана на DIP-свічах перед скиданням
 
         vTaskDelay(pdMS_TO_TICKS(3000)); // Невелика затримка, щоб користувач встиг прочитати повідомлення
         // Викликаємо очищення локальної пам'яті Zigbee (SDK саме перезавантажить плату)
