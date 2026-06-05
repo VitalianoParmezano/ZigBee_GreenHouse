@@ -3,6 +3,7 @@
 #include "light_driver.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
 #include "reset_configuration.h"         // Файл з функцією для налаштування кнопки скидання
 #include "dip_switch.h"
+#include "esp_zb_switch.h"             // Заголовочний файл з конфігурацією Zigbee та визначеннями для цього проекту
 
 #include "esp_log.h"                  // Бібліотека для виводу логів у консоль
 #include "nvs_flash.h"                // Бібліотека для роботи з енергонезалежною пам'яттю (NVS), де Zigbee зберігає мережеві дані
@@ -109,6 +110,13 @@ static void zigbee_task(void *arg) {
     create_greenhouse_light_endpoint_list(endpoint_list); // Функція для заповнення списку ендпоінтів (створена в endpoint_config.c)
 
     esp_zb_device_register(endpoint_list); 
+    // Встановлюємо максимальну кількість дітей
+    uint8_t max_children = esp_zb_nwk_get_max_children();
+    printf("\nМакс. кількість дітей, дозволена для цього пристрою: %d\n", max_children);
+    esp_err_t err = esp_zb_nwk_set_max_children(MAX_CHILDREN); 
+    printf("Статус помилки при встановленні нової кількості дітей: %d\n", err);
+    max_children = esp_zb_nwk_get_max_children();
+    printf("Макс. кількість дітей після встановлення: %d\n", max_children);
 
     esp_zb_core_action_handler_register(zb_action_handler);
 

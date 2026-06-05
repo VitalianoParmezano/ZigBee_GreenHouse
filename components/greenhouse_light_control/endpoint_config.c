@@ -120,8 +120,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         temp = temp->next;
     }
     printf("----------------------------------------\n");
-    printf("Усього ендпоінтів: %d\n", counter - 1);
-    
+    printf("Усього ендпоінтів: %d\n", counter - 1);    
 }
 
 void assign_internal_groups_after_join(void){
