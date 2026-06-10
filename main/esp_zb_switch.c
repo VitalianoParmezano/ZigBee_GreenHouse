@@ -1,4 +1,3 @@
-#include "console_handler.h"
 #include "endpoint_config.h"             // Файл з функцією для створення списку ендпоінтів пристрою
 #include "light_driver.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
 #include "reset_configuration.h"         // Файл з функцією для налаштування кнопки скидання
@@ -44,11 +43,8 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
             if (status == ESP_OK) { // Якщо ми успішно знайшли мережу і приєдналися до неї
                 esp_zb_ieee_addr_t ieee; // Змінна для зберігання нашої довгої MAC-адреси
                 esp_zb_get_long_address(ieee); // Зчитуємо власну MAC-адресу
-                // Виводимо радісне повідомлення з нашою повною адресою
                 ESP_LOGI(TAG, "✅ Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
-                // Далі робити нічого не треба — пристрій автоматично працює як ретранслятор у фоновому режимі
-                //assign_internal_groups_after_join(); // Викликаємо функцію для призначення груп після приєднання до мережі
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
                 ESP_LOGW(TAG, "❌ Пошук мережі невдалий. Повторна спроба через 5 секунд...");
@@ -57,8 +53,11 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
             }
             break;
+        
+        case ESP_ZB_ZDO_SIGNAL_LEAVE:
+            ESP_LOGI(TAG, "Пристрій залишив мережу. Статус: %d", status);
+            break;
 
-        // Для всіх інших сигналів, які нас не цікавлять
         default:
             ESP_LOGD(TAG, "Отримано Zigbee сигнал: %d, статус: %d", sig, status);
             break;
@@ -80,8 +79,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
                 //light_driver_set_brightness(attr_msg->info.dst_endpoint, level);
-                light_driver_set_level(attr_msg->info.dst_endpoint, level);
-                ESP_LOGI(TAG, "Нова яскравість: %d на ендпоінті: %d", level, attr_msg->info.dst_endpoint);
+                led_strip_set_level(attr_msg->info.dst_endpoint, level);
             }
         }
     } else {
@@ -133,7 +131,7 @@ static void zigbee_task(void *arg) {
 // ТОЧКА ВХОДУ В ПРОГРАМУ (MAIN)
 // ==========================================
 void app_main(void) {
-    // Ініціалізація енергонезалежної пам'яті (NVS). Це критично важливо, бо Zigbee зберігає тут ключі мережі
+    // Ініціалізація енергонезалежної пам'яті (NVS).
     esp_err_t ret = nvs_flash_init();
     
     // Якщо пам'ять пошкоджена, заповнена або має стару структуру
@@ -151,5 +149,4 @@ void app_main(void) {
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)
     xTaskCreate(zigbee_task, "zigbee_task", 4096, NULL, 5, NULL);
     
-    //console_handler_start(); // Запускаємо задачу для обробки консолі (якщо вона є)
 }

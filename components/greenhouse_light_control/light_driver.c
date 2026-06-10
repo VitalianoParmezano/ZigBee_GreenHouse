@@ -40,20 +40,20 @@ void light_driver_init(void){
 
 }
 
-void light_driver_set_level(int endpoint_id, uint8_t brightness)
+void led_strip_set_level(int endpoint_id, uint8_t brightness)
 {
     ESP_LOGI(TAG, "Setting brightness for endpoint %d to %d", endpoint_id, brightness);
     
     // Розподіляємо кольори залежно від номера ендпоінту
     switch (endpoint_id)
     {
-    case 2:
+    case 11:
         s_red = brightness;
         break;
-    case 3:
+    case 12:
         s_green = brightness;
         break;
-    case 4:
+    case 13:
         s_blue = brightness;
         break;
     default:
@@ -73,7 +73,7 @@ void light_driver_turn_off(void)
 }
 
 
-static void light_driver_blink_task(void *pvParameters)
+static void led_strip_blink_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Таску блимання успішно запущено.");
     while (1) {
@@ -90,13 +90,13 @@ static void light_driver_blink_task(void *pvParameters)
 }
 
 // Функція для СТАРТУ блимання
-void light_driver_blink_start(void)
+void led_strip_blink_start(void)
 {
     // Перевіряємо, чи таска ВЖЕ не запущена, щоб не створити дублікат
     if (s_blink_task_handle == NULL) {
         xTaskCreate(
-            light_driver_blink_task,   // Функція таски
-            "light_blink_task",        // Назва для дебагу
+            led_strip_blink_task,   // Функція таски
+            "led_strip_blink_task",        // Назва для дебагу
             2048,                      // Розмір стеку
             NULL,                      // Параметри
             5,                         // Пріоритет
@@ -109,7 +109,7 @@ void light_driver_blink_start(void)
 }
 
 // Функція для ЗУПИНКИ блимання
-void light_driver_blink_stop(void)
+void led_strip_blink_stop(void)
 {
     if (s_blink_task_handle != NULL) {
         vTaskDelete(s_blink_task_handle); // Видаляємо таску зі стеку операційної системи
@@ -125,7 +125,7 @@ void light_driver_blink_stop(void)
     }
 }
 
-void light_driver_blink_specific_times(uint8_t times)
+void led_strip_blink_specific_times(uint8_t times)
 {
     for (int i = 0; i < times; i++) {
         // Вмикаємо зелений колір

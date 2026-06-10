@@ -32,7 +32,7 @@ static void button_single_click_cb(void *arg, void *usr_data)
         
         dip_switch_reset_value(); // Скидаємо кешоване значення DIP-свічів, щоб при наступному запиті отримати актуальне
 
-        light_driver_blink_stop();       
+        led_strip_blink_stop();       
         //TODO: ПОТІМ ЗМІНИТИ! БЕЗ МАГІЧНИХ ЧИСЕЛ! 
         light_driver_turn_off(); // Вимикаємо світло, щоб було зрозуміло, що ми вийшли з мережі
         // Зчитуємо та виводимо конфігурацію DIP-свічів
@@ -43,7 +43,7 @@ static void button_single_click_cb(void *arg, void *usr_data)
         ESP_LOGW(TAG, "Виконується повне очищення пам'яті Zigbee та перезавантаження...");
         ESP_LOGW(TAG, "===============================================");
 
-        light_driver_blink_specific_times(dip_val); // Блимнемо n разів, щоб користувач зрозумів, яка група була вибрана на DIP-свічах перед скиданням
+        led_strip_blink_specific_times(dip_val); // Блимнемо n разів, щоб користувач зрозумів, яка група була вибрана на DIP-свічах перед скиданням
 
         vTaskDelay(pdMS_TO_TICKS(3000)); // Невелика затримка, щоб користувач встиг прочитати повідомлення
         // Викликаємо очищення локальної пам'яті Zigbee (SDK саме перезавантажить плату)
@@ -55,7 +55,12 @@ static void button_single_click_cb(void *arg, void *usr_data)
 
 static void button_long_press_1_cb(void *arg, void *usr_data)
 {
-    light_driver_blink_start(); // Запускаємо блимання
+    if (reset_configuration_initialized) {
+        ESP_LOGW(TAG, "Кнопку вже натиснуто! (Довгий клік) - вже ініціалізовано, нічого не робимо.");
+        return;
+    }
+    
+    led_strip_blink_start(); // Запускаємо блимання
 
     // Перевіряємо, чи ми взагалі маємо щось очищати в пам'яті
     if (!esp_zb_bdb_is_factory_new()) {
@@ -77,7 +82,7 @@ static void button_long_press_1_cb(void *arg, void *usr_data)
     } else {
         // Якщо пристрій і так "з коробки", просто дозволяємо зміну конфігурації
         ESP_LOGI(TAG, "Пристрій вже у стані Factory New. Мережевий скид не потрібен.");
-        my_zigbee_leave_callback(ESP_ZB_ZDP_STATUS_SUCCESS, NULL);
+        //my_zigbee_leave_callback(ESP_ZB_ZDP_STATUS_SUCCESS, NULL);
     }
 
     reset_configuration_initialized = true; 

@@ -7,7 +7,7 @@
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer);
 
 
-#define SHIFT 1 // Зсув для номерів ендпоінтів каналів (щоб не перетинатися з базовим ендпоінтом)
+#define SHIFT 10 // Зсув для номерів ендпоінтів каналів (щоб не перетинатися з базовим ендпоінтом)
 
 
 static const char *TAG = "ENDPOINT_CONFIG"; 
@@ -24,10 +24,10 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     uint8_t dip_val = dip_switch_get_value();
     printf("\nDIP switch value: %u\n", dip_val); 
 
-    // Створюємо буфер для нашого лейбла (4 байти)
+    // буфер для нашого номера діпсвіча (4 байти)
     uint8_t basic_product_label[4] = {0}; 
 
-    // ВИКЛИКАЄМО ФУНКЦІЮ: передаємо значення і масив для заповнення
+    // передаємо значення і масив для заповнення
     format_dip_to_pascal_string(dip_val, basic_product_label);
 
     //  Конфіг для базових параметрів (ZCL version, Power Source)
@@ -77,16 +77,17 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
 
 
-        //Додаємо On/Off
+        //Додаю On/Off
         esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_on_off_cluster_create(&on_off_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
         
-        //Додаємо Level Control
+        //Додаю Level Control
         esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_level_cluster_create(&level_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
         // Керування групами:
         esp_zb_cluster_list_add_groups_cluster(cluster_list, esp_zb_groups_cluster_create(&groups_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
         // Керування сценами:
         esp_zb_cluster_list_add_scenes_cluster(cluster_list, esp_zb_scenes_cluster_create(&scenes_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-
+        // P.S. Групи і сцени потрібні для того щоб ендпоінти додавались у групи на рівні Z2M, 
+        // навіть якщо сцени не використовуються, вони потрібні для коректного відображення в Z2M
 
         //Конфігурація самого Ендпоінта
         esp_zb_endpoint_config_t level_endpoint_config = { 
@@ -99,7 +100,8 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         // Додаємо до глобального списку
         esp_zb_ep_list_add_ep(ep_list, cluster_list, level_endpoint_config);
     }
-
+}
+/*
     ESP_LOGI(TAG, "\n=== Детальна інформація про Ендпоінти пристрою ===");
     
     esp_zb_ep_list_t *temp = ep_list;
@@ -122,40 +124,10 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     printf("----------------------------------------\n");
     printf("Усього ендпоінтів: %d\n", counter - 1);    
 }
+*/
 
-void assign_internal_groups_after_join(void){
-    uint8_t dip_val = dip_switch_get_value();
-    uint16_t short_addr = esp_zb_get_short_address();
 
-    for (int i = 1; i <= NUMBER_OF_CHANNEL_ENDPOINTS; i++)
-    {
-        uint8_t target_ep = i + SHIFT;
-	// Ця формула визначає ІД групи ендпоінта
-        uint16_t target_group_id = dip_val * 10 + i + SHIFT; // 12 - 1 зона, 2 канал
-
-        // Повністю розписана структура без трикрапок
-        esp_zb_zcl_groups_add_group_cmd_t add_group_cmd = {
-            .zcl_basic_cmd = {
-                .dst_addr_u = {
-                    .addr_short = short_addr // Використовуємо нашу змінну!
-                },
-                .dst_endpoint = target_ep,
-                .src_endpoint = 1, // Ендпоінт, від імені якого надсилається команда
-            },
-            .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
-            .group_id = target_group_id,
-        };
-
-        esp_zb_lock_acquire(portMAX_DELAY);
-        // Надсилаємо команду
-        esp_zb_zcl_groups_add_group_cmd_req(&add_group_cmd);
-        esp_zb_lock_release();
-
-        ESP_LOGI(TAG, "Команду Add Group (%d) надіслано на Endpoint %d", target_group_id, target_ep);
-    }
-}
-
-// Функція-хелпер: перетворює uint8_t у Zigbee Pascal-рядок
+// перетворює uint8_t у Zigbee Pascal-рядок
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer) 
 {
     // Записуємо цифри у масив, починаючи з індексу [1]
