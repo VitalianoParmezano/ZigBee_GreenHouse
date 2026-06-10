@@ -1,11 +1,17 @@
 /**
 
-Версія не робоча,
-не можна з середини екстеншину
-відправляти MQTT запити 
-(це зроблено для запобігання циклічним залежностям та багам у Z2M)
+This extension automatically creates groups for each channel of a device based on its productLabel (DIP switch value).
+
+Як це працює:
+1. Коли новий пристрій приєднується та успішно проходить інтерв'ю, розпочинається фоновий процес налаштування груп.
+2. Фоновий процес читає productLabel (DIP switch) з пристрою та створює 3 групи для кожного каналу.
+3. Якщо пристрій залишає мережу, всі його групи автоматично очищуються.
 
  */
+const SHIFT = 10; // Зміщення для Ендпоінтів з каналами. Налаштовується в самому пристрої і тут
+const NUMBER_OF_CHANNELS = 3; // Кількість каналів на пристрої. 
+const transitionTime = 2; // Час переходу для груп (в секундах)
+
 class AutoGrouper {
     // Нам знадобиться об'єкт state, щоб читати поточний стан пристрою
     constructor(zigbee, mqtt, state, _4, eventBus) {
@@ -18,7 +24,7 @@ class AutoGrouper {
     start() {
         console.log('🌿 [AutoGrouper] STARTED. Listening for state changes...');
 
-        console.log(`🌿 застосовано зміни 35`);
+        //console.log(`🌿 застосовано зміни 35`);
         // ПРАВИЛЬНА ПОДІЯ: onStateChange
         //this.eventBus.onStateChange(this, this.onStateChange.bind(this));
 
@@ -26,7 +32,7 @@ class AutoGrouper {
         
         this.eventBus.onDeviceJoined(this, this.onDeviceJoined.bind(this));
 
-        this.eventBus.onDeviceLeave(this, this.onDeviceLeave.bind(this));
+        //this.eventBus.onDeviceLeave(this, this.onDeviceLeave.bind(this));
     }
 
 
@@ -49,8 +55,7 @@ async onDeviceInterview(data) {
         
         console.log(`🌿 [AutoGrouper] Interview successful for: ${data.device.ieeeAddr}. Запускаю фоновий процес...`);
         
-        // ЗВЕРНИ УВАГУ: Ми викликаємо функцію БЕЗ слова "await"! 
-        // Це відриває її від головного потоку Z2M і дозволяє працювати у фоні.
+        // Виклик функції без "await"
         this.setupGroupsInBackground(data.device).catch(err => {
             console.error(`🌿 [AutoGrouper] ❌ Помилка у фоновому процесі: ${err.message}`);
         });
@@ -62,7 +67,7 @@ async onDeviceInterview(data) {
         console.log(`\n🌿 [AutoGrouper-BG] Фоновий процес для ${device.ieeeAddr} почався...`);
         // Даємо системі 2 секунди, щоб Z2M повністю завершив свої внутрішні процеси після інтерв'ю
         await new Promise(resolve => setTimeout(resolve, 2000));
-        console.log(`\n🌿 [AutoGrouper-BG] === Початок фонового налаштування груп ===`);
+        console.log(`\n🌿 [AutoGrouper-BG] === Початок налаштування груп ===`);
 
         const basicEndpoint = device.zh.getEndpoint(1);
         let myLabel;
@@ -83,11 +88,11 @@ async onDeviceInterview(data) {
         const deviceFriendlyName = device.name;
 
 
-        for (let i = 1; i <= 3; i++) {
+        for (let i = 1; i <= NUMBER_OF_CHANNELS; i++) {
             const group_ID = Number(myLabel) * 10 + i; 
             const channelName = `Channel_${i}`;
             const groupName = `Zone_${myLabel}_${channelName}`;
-            const endpointID = i + 1; 
+            const endpointID = i + SHIFT; 
 
             if (!device.zh.getEndpoint(endpointID)) continue;
 
@@ -98,7 +103,7 @@ async onDeviceInterview(data) {
                 id: group_ID
             };
             
-            console.log(`🌿 [AutoGrouper-BG] 1. Ін'єкція bridge/request/group/add...`);
+            console.log(`🌿 [AutoGrouper-BG] Ін'єкція bridge/request/group/add...`);
             // Замість публікації на брокер, ми імітуємо, що повідомлення щойно прийшло!
             // Увага: тут обов'язково має бути базовий топік (за замовчуванням zigbee2mqtt)
             this.eventBus.emitMQTTMessage({
@@ -115,39 +120,36 @@ async onDeviceInterview(data) {
                 skip_disable_reporting: true
             };
 
-            console.log(`🌿 [AutoGrouper-BG] 2. Ін'єкція bridge/request/group/members/add...`);
+            console.log(`🌿 [AutoGrouper-BG] Ін'єкція bridge/request/group/members/add...`);
             this.eventBus.emitMQTTMessage({
                 topic: 'zigbee2mqtt/bridge/request/group/members/add', 
                 message: JSON.stringify(addMemberPayload)
             });
 
             await new Promise(resolve => setTimeout(resolve, 1000));
-            console.log(`🌿 [AutoGrouper-BG] 🟢 Канал ${channelName} успішно налаштовано.`);
+
+            const setOptionsPayload = {
+                id: groupName,
+                options: {
+                    transition: transitionTime
+                }
+            };
+
+            console.log(`🌿 [AutoGrouper-BG] Встановлюємо transition = ${transitionTime/10}s...`);
+            this.eventBus.emitMQTTMessage({
+                topic: 'zigbee2mqtt/bridge/request/group/options', 
+                message: JSON.stringify(setOptionsPayload)
+            });
+
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            // =================================================================
+
+            console.log(`🌿 [AutoGrouper-BG] Канал ${channelName} успішно налаштовано.`);
+        
         }
 
     }
 
-    async onDeviceLeave(data) {
-            const ieeeAddr = data.ieeeAddr || (data.device && data.device.ieeeAddr);
-            const deviceFriendlyName = (data.device && data.device.name) ? data.device.name : ieeeAddr;
-
-            // console.log(`\n🌿 [AutoGrouper] Device left: ${deviceFriendlyName} (${ieeeAddr}). Очищаємо групи...`);
-
-            // const removeAllPayload = {
-            //     device: ieeeAddr,
-            //     skip_disable_reporting: true // Можна додати, якщо Z2M свариться на те, що пристрій офлайн
-            // };
-
-            // console.log(`🌿 [AutoGrouper] Надсилаємо запит remove_all для пристрою...`);
-            
-            // this.eventBus.emitMQTTMessage({
-            //     topic: 'zigbee2mqtt/bridge/request/group/members/remove_all', 
-            //     message: JSON.stringify(removeAllPayload)
-            // });
-
-            console.log(`🌿 [AutoGrouper] 🟢 Пристрій ${deviceFriendlyName} видалено з груп.\n`);
-        }
-    
 
 }
 
