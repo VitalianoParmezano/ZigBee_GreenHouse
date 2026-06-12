@@ -82,6 +82,7 @@ static void button_long_press_1_cb(void *arg, void *usr_data)
     } else {
         // Якщо пристрій і так "з коробки", просто дозволяємо зміну конфігурації
         ESP_LOGI(TAG, "Пристрій вже у стані Factory New. Мережевий скид не потрібен.");
+        esp_zb_lock_acquire(portMAX_DELAY);
         //my_zigbee_leave_callback(ESP_ZB_ZDP_STATUS_SUCCESS, NULL);
     }
 

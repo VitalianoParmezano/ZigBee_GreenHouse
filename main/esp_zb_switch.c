@@ -3,6 +3,7 @@
 #include "reset_configuration.h"         // Файл з функцією для налаштування кнопки скидання
 #include "dip_switch.h"
 #include "esp_zb_switch.h"             // Заголовочний файл з конфігурацією Zigbee та визначеннями для цього проекту
+#include "modbus.h"                  // Бібліотека для виводу логів у консоль
 
 #include "esp_log.h"                  // Бібліотека для виводу логів у консоль
 #include "nvs_flash.h"                // Бібліотека для роботи з енергонезалежною пам'яттю (NVS), де Zigbee зберігає мережеві дані
@@ -80,6 +81,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
                 //light_driver_set_brightness(attr_msg->info.dst_endpoint, level);
                 led_strip_set_level(attr_msg->info.dst_endpoint, level);
+                int channel = attr_msg->info.dst_endpoint % 10; // Використовуємо номер ендпоінту як канал для Modbus
+                modbus_send_brightness_to_channel(level * 10, channel); // Записуємо яскравість у Modbus (для зовнішнього контролю)
             }
         }
     } else {
@@ -143,6 +146,7 @@ void app_main(void) {
     dip_switch_init(); // Ініціалізуємо GPIO для Діп свіча
     light_driver_init(); // Ініціалізуємо драйвер світла
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
+    modbus_init();
 
     ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
