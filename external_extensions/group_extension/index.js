@@ -25,7 +25,6 @@ class AutoGrouper {
         console.log('🌿 [AutoGrouper] STARTED. Listening for state changes...');
 
         //console.log(`🌿 застосовано зміни 35`);
-        // ПРАВИЛЬНА ПОДІЯ: onStateChange
         //this.eventBus.onStateChange(this, this.onStateChange.bind(this));
 
         this.eventBus.onDeviceInterview(this, this.onDeviceInterview.bind(this));
@@ -128,20 +127,22 @@ async onDeviceInterview(data) {
 
             await new Promise(resolve => setTimeout(resolve, 1000));
 
-            const setOptionsPayload = {
-                id: groupName,
-                options: {
-                    transition: transitionTime
-                }
-            };
+            // Цей блок коду створює час переходу, якщо його треба буде повернути то дивитись сюди
+            // =================================================================
+            // const setOptionsPayload = {
+            //     id: groupName,
+            //     options: {
+            //         transition: transitionTime
+            //     }
+            // };
 
-            console.log(`🌿 [AutoGrouper-BG] Встановлюємо transition = ${transitionTime/10}s...`);
-            this.eventBus.emitMQTTMessage({
-                topic: 'zigbee2mqtt/bridge/request/group/options', 
-                message: JSON.stringify(setOptionsPayload)
-            });
+            // console.log(`🌿 [AutoGrouper-BG] Встановлюємо transition = ${transitionTime/10}s...`);
+            // this.eventBus.emitMQTTMessage({
+            //     topic: 'zigbee2mqtt/bridge/request/group/options', 
+            //     message: JSON.stringify(setOptionsPayload)
+            // });
 
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            // await new Promise(resolve => setTimeout(resolve, 1000));
             // =================================================================
 
             console.log(`🌿 [AutoGrouper-BG] Канал ${channelName} успішно налаштовано.`);
