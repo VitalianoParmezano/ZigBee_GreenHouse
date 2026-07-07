@@ -75,18 +75,65 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         ESP_LOGI(TAG, "Зміна атрибута на ЕП %d, кластер 0x%x, атрибут ID 0x%x", 
                  attr_msg->info.dst_endpoint, attr_msg->info.cluster, attr_msg->attribute.id);
 
+        // ==========================================
         // ОБРОБКА ЯСКРАВОСТІ (Cluster 0x0008)
+        // ==========================================
         if (attr_msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
-                //light_driver_set_brightness(attr_msg->info.dst_endpoint, level);
                 led_strip_set_level(attr_msg->info.dst_endpoint, level);
-                int channel = attr_msg->info.dst_endpoint % 10; // Використовуємо номер ендпоінту як канал для Modbus
-                modbus_send_brightness_to_channel(level * 10, channel); // Записуємо яскравість у Modbus (для зовнішнього контролю)
+                
+                // Використання номера ендпоінту як каналу для Modbus
+                int channel = attr_msg->info.dst_endpoint % 10; 
+                
+                // Запис яскравості у Modbus (для зовнішнього контролю)
+                modbus_send_brightness_to_channel(level * 10, channel); 
+            }
+        }
+        // ==========================================
+        // ОБРОБКА МЕТАДАНИХ (Кастомний кластер 0xFF01 на ЕП 2)
+        // ==========================================
+        else if (attr_msg->info.cluster == 0xFF01 && attr_msg->info.dst_endpoint == 2) {
+            switch (attr_msg->attribute.id) {
+                
+                case 0x0000: { // Режим роботи
+                    uint8_t new_mode = *(uint8_t *)attr_msg->attribute.data.value;
+                    ESP_LOGI(TAG, "Встановлено новий режим роботи: %d", new_mode);
+                    // TODO: Запис new_mode у NVS пам'ять
+                    break;
+                }
+
+                case 0x0002: { // Офлайн-яскравість
+                    uint8_t new_offline_bright = *(uint8_t *)attr_msg->attribute.data.value;
+                    ESP_LOGI(TAG, "Встановлено офлайн-яскравість: %d%%", new_offline_bright);
+                    // TODO: Запис new_offline_bright у NVS пам'ять
+                    break;
+                }
+
+                case 0x0003: { // Бінарний масив розкладу
+                    uint8_t *payload = (uint8_t *)attr_msg->attribute.data.value;
+                    
+                    // Читання першого байта (довжина корисного навантаження)
+                    uint8_t payload_length = payload[0]; 
+                    
+                    // Накладання структури на сирі дані (зміщення на 1 байт для пропуску довжини)
+                    time_mark_t *schedule = (time_mark_t *)&payload[1];
+                    
+                    ESP_LOGI(TAG, "Отримано новий розклад. Довжина: %d байт", payload_length);
+                    ESP_LOGI(TAG, "Перевірка мітки 1 -> Час: %d хв, Яскравість: %d%%", 
+                             schedule[0].minute, schedule[0].brightness);
+                             
+                    // TODO: Запис масиву payload (або schedule) у NVS пам'ять
+                    break;
+                }
+
+                default:
+                    ESP_LOGW(TAG, "Отримано невідомий атрибут для кластера метаданих: 0x%x", attr_msg->attribute.id);
+                    break;
             }
         }
     } else {
-        ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
+        ESP_LOGD(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
     }
     return ret;
 }
