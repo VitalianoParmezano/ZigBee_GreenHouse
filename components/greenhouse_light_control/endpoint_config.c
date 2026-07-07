@@ -7,11 +7,24 @@
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer);
 
 
-#define SHIFT 10 // Зсув для номерів ендпоінтів каналів (щоб не перетинатися з базовим ендпоінтом)
+#define SHIFT 10 // Зсув для номерів ендпоінтів каналів (11 - перша зона 1 канал, 23 друга зона третій канал).
 
+// Глобальні змінні для кастомного кластера
+static uint8_t boot_status_dip = 1;       // Атрибут 0x0000: Статус завантаження
+static uint8_t current_mode = 0;          // Атрибут 0x0001: Поточний режим роботи (0 - Manual, 1 - Auto, 2 - Timer)
+static uint8_t offline_brightness = 50;   // Атрибут 0x0002: Значення яскравості у випадку відсутності з'єднання (0-100)
+/*
+* Атрибут 0x0003: Рядок октетів (Octet String) для бінарного розкладу. Таймерні сценарії.
+* * За специфікацією Zigbee ZCL, перший байт масиву типу OCTET_STRING 
+* завжди визначає довжину корисного навантаження. Пакет містить 36 байт даних,
+* нульовий індекс ініціалізується значенням 36, 
+* а решта пам'яті заповнюється нулями.
+*   36 томущо часова мітка має 3 байти (time_mark_t), є 12 міток (12 * 3 = 36).
+*   Після отримання даних від сервера, перший байт буде замінений на фактичну довжину отриманого масиву, а решта байтів буде заповнена даними. 
+*/
+static uint8_t timer_data[37] = {36, 0}; 
 
 static const char *TAG = "ENDPOINT_CONFIG"; 
-// Зсув номерів ендпоінтів каналів
 
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 {
@@ -58,8 +71,85 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     .app_device_id = ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID,
     .app_device_version = 1
 });
+
+// Конфіг 2 ендпоінта, тут буде запис режиму роботи, статус чи готовий завантажити дані з сервера про поточну яскравість
+// і значення яскравості яке буде у випадку відсутності з'єднання. TODO останнє
+
+
+
+
+// Конфіг 2 ендпоінта: запис режиму роботи, статус готовності до завантаження 
+    // і значення яскравості, яке буде у випадку відсутності з'єднання.
+    esp_zb_endpoint_config_t endpoint_config_2 = {
+        .endpoint = 2,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_CUSTOM_ATTR_DEVICE_ID,
+        .app_device_version = 1
+    };
+
+    // Ініціалізація списку кластерів для другого ендпоінта
+    esp_zb_cluster_list_t *cluster_list_second = esp_zb_zcl_cluster_list_create();
+
+    // Додавання обов'язкових базових кластерів (КРИТИЧНО для розпізнавання в Z2M)
+    esp_zb_cluster_list_add_basic_cluster(cluster_list_second, esp_zb_basic_cluster_create(NULL), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_identify_cluster(cluster_list_second, esp_zb_identify_cluster_create(NULL), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    // Ініціалізація кастомного кластера для метаданих
+    esp_zb_attribute_list_t *custom_cluster = esp_zb_zcl_attr_list_create(0xFF01); 
+
+    // --- Реєстрація атрибутів у кластері відповідно до оновлених змінних ---
+
+    // Атрибут 0x0000: Статус завантаження (DIP-світч)
+    // Прапорець ESP_ZB_ZCL_ATTR_ACCESS_REPORTING вмикає автоматичне надсилання звіту при зміні.
+    esp_zb_custom_cluster_add_custom_attr(
+        custom_cluster, 
+        0x0000, 
+        ESP_ZB_ZCL_ATTR_TYPE_U8, 
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, 
+        &boot_status_dip
+    );
+
+    // Атрибут 0x0001: Поточний режим роботи (0 - Manual, 1 - Auto, 2 - Timer)
+    esp_zb_custom_cluster_add_custom_attr(
+        custom_cluster, 
+        0x0001, 
+        ESP_ZB_ZCL_ATTR_TYPE_U8, 
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
+        &current_mode
+    );
+
+    // Атрибут 0x0002: Значення яскравості у випадку відсутності з'єднання
+    esp_zb_custom_cluster_add_custom_attr(
+        custom_cluster, 
+        0x0002, 
+        ESP_ZB_ZCL_ATTR_TYPE_U8, 
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
+        &offline_brightness
+    );
+
+    // Атрибут 0x0003: Бінарний масив розкладу (Octet String)
+    esp_zb_custom_cluster_add_custom_attr(
+        custom_cluster, 
+        0x0003, 
+        ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING, // Затестити з цим типом, якщо будуть проблеми, змінити тип
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
+        timer_data
+    );
+
+    // Додавання наповненого кастомного кластера до списку кластерів другого ендпоінта
+    esp_zb_cluster_list_add_custom_cluster(cluster_list_second, custom_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    /*
+     * Реєстрація другого ендпоінта у загальному списку пристрою.
+     */
+    esp_zb_ep_list_add_ep(ep_list, cluster_list_second, endpoint_config_2);
     
+    
+    //------------------------------------------------
+    //------------------------------------------------
+    //------------------------------------------------
     // Конфіги для кластерів у циклі
+    // Застосовуються для усіх ендпоінтів каналів
     esp_zb_level_cluster_cfg_t level_cluster_cfg = { .current_level = 0x0 }; 
     esp_zb_on_off_cluster_cfg_t on_off_cluster_cfg = { .on_off = false };
     esp_zb_groups_cluster_cfg_t groups_cfg = { .groups_name_support_id = 0 }; // Група 
@@ -71,6 +161,9 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         .name_support = 0,
     };
 
+    //------------------------------------------------
+    // ЦИКЛ СТВОРЮЄ КАНАЛИ (ЕНДПОІНТИ) ДЛЯ КЕРУВАННЯ ЯСКРАВОСТЮ
+    //------------------------------------------------
     for (int i = 1; i <= NUMBER_OF_CHANNEL_ENDPOINTS; i++)
     {
         //Створюю НОВИЙ список кластерів для КОЖНОГО ендпоінта всередині циклу
@@ -130,10 +223,10 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 // перетворює uint8_t у Zigbee Pascal-рядок
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer) 
 {
-    // Записуємо цифри у масив, починаючи з індексу [1]
+    // Запис цифр у масив, починаючи з індексу [1]
     // snprintf автоматично повертає кількість записаних символів
     int text_len = snprintf((char *)&out_buffer[1], 4, "%u", dip_val);
     
-    // Записуємо довжину тексту в нульовий байт
+    // Запис довжини тексту в нульовий байт
     out_buffer[0] = (uint8_t)text_len;
 }

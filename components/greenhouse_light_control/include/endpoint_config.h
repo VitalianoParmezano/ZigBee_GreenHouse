@@ -10,6 +10,12 @@ extern "C" {
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list);
 void assign_internal_groups_after_join(void);
 
+// Структура чаосової мітки
+typedef struct {
+    uint16_t minute;         // 2 байти (Час у хвилинах, 0-1439)
+    uint8_t brightness;      // 1 байт (Відсоток, 0-100)
+} ESP_ZB_PACKED_STRUCT time_mark_t;
+
 #ifdef __cplusplus
 }
 #endif
