@@ -53,7 +53,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     // (Це автоматично додасть ZCL Version та Power Source)
     esp_zb_attribute_list_t *basic_attr_list = esp_zb_basic_cluster_create(&basic_cfg);
 
-    //  Додаю кастомні атрибути до списку бащового кластеру
+    //  Додаю кастомні атрибути до списку базового кластеру
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_id);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, manufacturer_name);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);
@@ -67,7 +67,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 
     esp_zb_ep_list_add_ep(ep_list, cluster_list_first, (esp_zb_endpoint_config_t){
     .endpoint = 1,
-    .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+    .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,  
     .app_device_id = ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID,
     .app_device_version = 1
 });
@@ -99,7 +99,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 
     // --- Реєстрація атрибутів у кластері відповідно до оновлених змінних ---
 
-    // Атрибут 0x0000: Статус завантаження (DIP-світч)
+    // Атрибут 0x0000: Статус завантаження
     // Прапорець ESP_ZB_ZCL_ATTR_ACCESS_REPORTING вмикає автоматичне надсилання звіту при зміні.
     esp_zb_custom_cluster_add_custom_attr(
         custom_cluster, 

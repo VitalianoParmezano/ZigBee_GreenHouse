@@ -89,9 +89,8 @@ log.log
 data/
 
 # VS Code / IDE settings
-.vscode/
 .idea/
-
+.vscode/
 # System files
 .DS_Store
 Thumbs.db

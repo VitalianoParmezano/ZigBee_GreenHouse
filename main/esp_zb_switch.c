@@ -96,23 +96,35 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         else if (attr_msg->info.cluster == 0xFF01 && attr_msg->info.dst_endpoint == 2) {
             switch (attr_msg->attribute.id) {
                 
-                case 0x0000: { // Режим роботи
-                    uint8_t new_mode = *(uint8_t *)attr_msg->attribute.data.value;
-                    ESP_LOGI(TAG, "Встановлено новий режим роботи: %d", new_mode);
-                    // TODO: Запис new_mode у NVS пам'ять
+                case 0x0000: { // Бут статус
+                    uint8_t new_boot_status = *(uint8_t *)attr_msg->attribute.data.value;
+                    ESP_LOGI(TAG, "Бут статус: %d", new_boot_status);
+                    // TODO: Запис new_boot_status у NVS пам'ять
                     break;
                 }
 
-                case 0x0002: { // Офлайн-яскравість
-                    uint8_t new_offline_bright = *(uint8_t *)attr_msg->attribute.data.value;
-                    ESP_LOGI(TAG, "Встановлено офлайн-яскравість: %d%%", new_offline_bright);
+                case 0x0001: { // Режим роботи
+                    uint8_t new_mode = *(uint8_t *)attr_msg->attribute.data.value;
+                    ESP_LOGI(TAG, "Встановлено режим роботи: %d%%", new_mode);
                     // TODO: Запис new_offline_bright у NVS пам'ять
                     break;
                 }
-
-                case 0x0003: { // Бінарний масив розкладу
+                case 0x0002: { // Офлайн-яскравість
+                    uint8_t new_offline_bright = *(uint8_t *)attr_msg->attribute.data.value;
+                    ESP_LOGI(TAG, "Встановлено офлайн-яскравість: %d%%", new_offline_bright);
+                    break;
+                }
+                case 0x0003: { // Розклад
                     uint8_t *payload = (uint8_t *)attr_msg->attribute.data.value;
-                    
+                    printf("Отримано сирий масив даних розкладу: \n ");
+                    for (int i = 0; i < attr_msg->attribute.data.size; i++) {
+                        printf("%d ", payload[i]);
+                    }
+                    printf("\n");
+                    for (int i = 0; i < attr_msg->attribute.data.size; i++) {
+                        printf("%c", (char)payload[i]);
+                    }
+                    printf("\n");
                     // Читання першого байта (довжина корисного навантаження)
                     uint8_t payload_length = payload[0]; 
                     
