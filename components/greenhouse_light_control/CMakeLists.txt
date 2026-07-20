@@ -5,7 +5,8 @@ idf_component_register(
     INCLUDE_DIRS 
         "include" 
     PRIV_REQUIRES 
-        esp-zigbee-lib
         log            
         reset_configuration
+    REQUIRES
+        esp-zigbee-lib
 )

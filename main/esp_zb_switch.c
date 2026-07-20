@@ -13,9 +13,9 @@
 
 #include "time.h"
 #include "sys/time.h"
+#include "timers.h"
 
 
-#define ESP_ZB_TIME_OFFSET 946684800 // Різниця між епохою Unix (1970) та епохою Zigbee (2000) у секундах
 
 static const char *TAG = "Light_Router"; 
 
@@ -50,6 +50,8 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
                 esp_zb_get_long_address(ieee); // Зчитуємо власну MAC-адресу
                 ESP_LOGI(TAG, "✅ Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
+
+                timer_init(); // Ініціалізуємо таймер для синхронізації часу з координатором
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
                 ESP_LOGW(TAG, "❌ Пошук мережі невдалий. Повторна спроба через 5 секунд...");
@@ -78,20 +80,14 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         // Перевірка, чи це кластер часу (0x000A) і чи статус ESP_OK (0x00)
         if (resp->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_TIME) {
             if (resp->info.status != ESP_OK) {
-                ESP_LOGE(TAG, "Помилка. Код ZCL: 0x%02X", resp->info.status);
+                ESP_LOGE(TAG, "Помилка при отримані часу. Код ZCL: 0x%02X", resp->info.status);
                 return ESP_OK;
             }
             esp_zb_zcl_read_attr_resp_variable_t *variable = resp->variables;
             while (variable) {
                 if (variable->attribute.id == ESP_ZB_ZCL_ATTR_TIME_TIME_ID) {
                     uint32_t zigbee_time = *(uint32_t *)variable->attribute.data.value;  
-                    uint32_t unix_time = zigbee_time + ESP_ZB_TIME_OFFSET;
-                    struct timeval tv = {
-                        .tv_sec = (time_t)unix_time, // Секунди
-                        .tv_usec = 0                 // Мікросекунди
-                    };
-                    settimeofday((const struct timeval[]){{.tv_sec = unix_time}}, NULL);
-                    ESP_LOGI(TAG, "Час синхронізовано: Zigbee:%lu, Unix:%lu", zigbee_time, unix_time);
+                    timer_set_from_Zigbee_to_Unix(zigbee_time); // Виклик функції для встановлення системного часу
                 }
                 
                 variable = variable->next;
@@ -251,6 +247,7 @@ static void zigbee_task(void *arg) {
     }
 }
 
+
 // ==========================================
 // ТОЧКА ВХОДУ В ПРОГРАМУ (MAIN)
 // ==========================================
@@ -274,4 +271,5 @@ void app_main(void) {
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)
     xTaskCreate(zigbee_task, "zigbee_task", 4096, NULL, 5, NULL);
     
+
 }
