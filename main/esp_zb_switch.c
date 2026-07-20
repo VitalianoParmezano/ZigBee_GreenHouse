@@ -11,7 +11,11 @@
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
 
+#include "time.h"
+#include "sys/time.h"
 
+
+#define ESP_ZB_TIME_OFFSET 946684800 // Різниця між епохою Unix (1970) та епохою Zigbee (2000) у секундах
 
 static const char *TAG = "Light_Router"; 
 
@@ -68,6 +72,32 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
     esp_err_t ret = ESP_OK;
+
+    if (callback_id == ESP_ZB_CORE_CMD_READ_ATTR_RESP_CB_ID){
+        esp_zb_zcl_cmd_read_attr_resp_message_t *resp = (esp_zb_zcl_cmd_read_attr_resp_message_t *)message;
+        // Перевірка, чи це кластер часу (0x000A) і чи статус ESP_OK (0x00)
+        if (resp->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_TIME) {
+            if (resp->info.status != ESP_OK) {
+                ESP_LOGE(TAG, "Помилка. Код ZCL: 0x%02X", resp->info.status);
+                return ESP_OK;
+            }
+            esp_zb_zcl_read_attr_resp_variable_t *variable = resp->variables;
+            while (variable) {
+                if (variable->attribute.id == ESP_ZB_ZCL_ATTR_TIME_TIME_ID) {
+                    uint32_t zigbee_time = *(uint32_t *)variable->attribute.data.value;  
+                    uint32_t unix_time = zigbee_time + ESP_ZB_TIME_OFFSET;
+                    struct timeval tv = {
+                        .tv_sec = (time_t)unix_time, // Секунди
+                        .tv_usec = 0                 // Мікросекунди
+                    };
+                    settimeofday((const struct timeval[]){{.tv_sec = unix_time}}, NULL);
+                    ESP_LOGI(TAG, "Час синхронізовано: Zigbee:%lu, Unix:%lu", zigbee_time, unix_time);
+                }
+                
+                variable = variable->next;
+            }
+        }
+    }
 
     if (callback_id == ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
         esp_zb_zcl_set_attr_value_message_t *attr_msg = (esp_zb_zcl_set_attr_value_message_t *)message;

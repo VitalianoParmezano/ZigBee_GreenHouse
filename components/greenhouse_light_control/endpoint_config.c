@@ -1,5 +1,6 @@
 #include "endpoint_config.h"
 #include "dip_switch.h"
+#include "esp_zigbee_cluster.h"
 
 #define ESP_MANUFACTURER_NAME "\x03""ESV" 
 #define ESP_MODEL_ID          "\x18""Greenhouse_Controller_v1" // \x18 це 24 в HEX
@@ -11,7 +12,6 @@ static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer);
 static uint8_t boot_status = 0;       // Атрибут 0x0000: Статус завантаження: по-дефолту 0, після отримання даних від сервера змінюється на 1
 static uint8_t current_mode = 0;          // Атрибут 0x0001: Поточний режим роботи (0 - Manual, 1 - Auto, 2 - Timer)
 static uint8_t offline_brightness = 50;   // Атрибут 0x0002: Значення яскравості у випадку відсутності з'єднання (0-100)
-static uint16_t current_time = 0;                 // Атрибут 0x0003: Час у хвилинах (0-1439)
 /*
 * Атрибут 0x0003: Рядок октетів (Octet String) для бінарного розкладу. Таймерні сценарії.
 * * За специфікацією Zigbee ZCL, перший байт масиву типу OCTET_STRING 
@@ -116,15 +116,16 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
         &current_mode
     );
-    // Атрибут 0x0002: Значення часу у хвилинах (0-1439)
-    esp_zb_custom_cluster_add_custom_attr(
-        custom_cluster, 
-        0x0002, 
-        ESP_ZB_ZCL_ATTR_TYPE_U16, 
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
-        &current_time
-    );
 
+    // Кластер часу
+    esp_zb_time_cluster_cfg_t time_cfg = {
+        .time = 0, // Ініціалізація часу (може бути оновлена пізніше)
+        .time_status = 0, // Статус часу (може бути оновлений пізніше)
+    };
+
+    esp_zb_time_cluster_create(&time_cfg);
+    // Додавання кластеру часу до списку кластерів другого ендпоінта
+    esp_zb_cluster_list_add_time_cluster(cluster_list_second, esp_zb_time_cluster_create(&time_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
     // Додавання наповненого кастомного кластера до списку кластерів другого ендпоінта
     esp_zb_cluster_list_add_custom_cluster(cluster_list_second, custom_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
@@ -207,6 +208,26 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 
         esp_zb_ep_list_add_ep(ep_list, cluster_list, level_endpoint_config);
     }
+}
+
+static uint16_t time_attributes_to_read[] = { ESP_ZB_ZCL_ATTR_TIME_TIME_ID }; // 0x0000
+
+void request_time_from_coordinator(void) {
+   	ESP_LOGI(TAG, "Requesting time from coordinator...");
+
+    uint16_t attributes[] = 
+    {
+        ESP_ZB_ZCL_ATTR_TIME_TIME_ID
+    };
+     esp_zb_zcl_read_attr_cmd_t read_req;
+    read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+    read_req.attr_field = attributes;
+    read_req.attr_number = sizeof(attributes) / sizeof(uint16_t);
+    read_req.clusterID = ESP_ZB_ZCL_CLUSTER_ID_TIME;
+    read_req.zcl_basic_cmd.dst_endpoint = 1;
+    read_req.zcl_basic_cmd.src_endpoint = 2;
+    read_req.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000;  //coordinator
+    esp_zb_zcl_read_attr_cmd_req(&read_req);
 }
 
 // перетворює uint8_t у Zigbee Pascal-рядок

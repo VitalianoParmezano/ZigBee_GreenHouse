@@ -10,6 +10,8 @@ extern "C" {
 
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list);
 void assign_internal_groups_after_join(void);
+void request_time_from_coordinator(void);
+
 
 // Структура чаосової мітки
 typedef struct {
