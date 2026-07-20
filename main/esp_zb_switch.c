@@ -90,52 +90,84 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 modbus_send_brightness_to_channel(level * 10, channel); 
             }
         }
-        // ==========================================
-        // ОБРОБКА МЕТАДАНИХ (Кастомний кластер 0xFF01 на ЕП 2)
+            // ==========================================
+        // ОБРОБКА СИСТЕМНИХ МЕТАДАНИХ (Кастомний кластер 0xFF01 на ЕП 2)
         // ==========================================
         else if (attr_msg->info.cluster == 0xFF01 && attr_msg->info.dst_endpoint == 2) {
             switch (attr_msg->attribute.id) {
-                
+
                 case 0x0000: { // Бут статус
                     uint8_t new_boot_status = *(uint8_t *)attr_msg->attribute.data.value;
-                    ESP_LOGI(TAG, "Бут статус: %d", new_boot_status);
-                    // TODO: Запис new_boot_status у NVS пам'ять
+                    ESP_LOGI(TAG, "Бут статус змінено на: %d", new_boot_status);
+                    // TODO: значення записується у NVS пам'ять
                     break;
                 }
 
                 case 0x0001: { // Режим роботи
                     uint8_t new_mode = *(uint8_t *)attr_msg->attribute.data.value;
-                    ESP_LOGI(TAG, "Встановлено режим роботи: %d%%", new_mode);
-                    // TODO: Запис new_offline_bright у NVS пам'ять
+                    ESP_LOGI(TAG, "Режим роботи встановлено: %d", new_mode);
+                    // TODO: значення записується у NVS пам'ять
                     break;
                 }
-                case 0x0002: { // Офлайн-яскравість
+
+                case 0x0002: { // Поточний час доби (хвилини від півночі, 0-1439)
+                    uint16_t new_time = *(uint16_t *)attr_msg->attribute.data.value;
+                    ESP_LOGI(TAG, "Поточний час пристрою оновлено: %d хв", new_time);
+                    break;
+                }
+
+                default:
+                    ESP_LOGW(TAG, "Отримано невідомий атрибут системного кластера: 0x%x", attr_msg->attribute.id);
+                    break;
+            }
+        }
+        // ==========================================
+        // ОБРОБКА ПАРАМЕТРІВ КАНАЛУ (Кастомний кластер 0xFC01 на ЕП 11-13)
+        // ==========================================
+        else if (attr_msg->info.cluster == 0xFC01 && attr_msg->info.dst_endpoint > 2) {
+            // Індекс каналу (0-based) обчислюється з номера ендпоінту,
+            // оскільки кожен канал має власний екземпляр кластера 0xFC01
+            int channel_index = attr_msg->info.dst_endpoint - SHIFT - 1;
+
+            switch (attr_msg->attribute.id) {
+
+                case 0x0000: { // Офлайн-яскравість каналу
                     uint8_t new_offline_bright = *(uint8_t *)attr_msg->attribute.data.value;
-                    ESP_LOGI(TAG, "Встановлено офлайн-яскравість: %d%%", new_offline_bright);
+                    ESP_LOGI(TAG, "Канал %d: встановлено офлайн-яскравість %d%%",
+                             channel_index + 1, new_offline_bright);
+                    // TODO: значення записується у NVS для відповідного каналу
                     break;
                 }
-                case 0x0003: { // Розклад
+
+                case 0x0001: { // Розклад каналу (Octet String)
                     uint8_t *payload = (uint8_t *)attr_msg->attribute.data.value;
-                    printf("Отримано сирий масив даних розкладу: \n ");
-                    for (int i = 0; i < attr_msg->attribute.data.size; i++) {
-                        printf("%d ", payload[i]);
+                    uint8_t payload_length = payload[0];
+                    printf("Канал %d: Сирий розклад: ", channel_index + 1);
+                    for (int i = 0; i < payload_length; i++) {
+                        printf("%d ", payload[1 + i]);
                     }
                     printf("\n");
-                    for (int i = 0; i < attr_msg->attribute.data.size; i++) {
-                        printf("%c", (char)payload[i]);
+                    /*
+                     * Довжина обмежується фактичним розміром отриманого буфера,
+                     * щоб пошкоджений або укорочений пакет не спричиняв
+                     * читання за межами виділеної пам'яті.
+                     */
+                    uint8_t available = (uint8_t)(attr_msg->attribute.data.size - 1);
+                    if (payload_length > available) {
+                        payload_length = available;
                     }
-                    printf("\n");
-                    // Читання першого байта (довжина корисного навантаження)
-                    uint8_t payload_length = payload[0]; 
-                    
-                    // Накладання структури на сирі дані (зміщення на 1 байт для пропуску довжини)
+
                     time_mark_t *schedule = (time_mark_t *)&payload[1];
+                    uint8_t marks_count = payload_length / sizeof(time_mark_t);
                     
-                    ESP_LOGI(TAG, "Отримано новий розклад. Довжина: %d байт", payload_length);
-                    ESP_LOGI(TAG, "Перевірка мітки 1 -> Час: %d хв, Яскравість: %d%%", 
-                             schedule[0].minute, schedule[0].brightness);
-                             
-                    // TODO: Запис масиву payload (або schedule) у NVS пам'ять
+                    ESP_LOGI(TAG, "Канал %d: отримано розклад, %d міток",
+                             channel_index + 1, marks_count);
+
+                    for (int m = 0; m < marks_count; m++) {
+                        ESP_LOGI(TAG, "  Мітка %d -> хвилина: %d, яскравість: %d%%",
+                                 m, schedule[m].minute, schedule[m].brightness);
+                    }
+                    // TODO: значення записується у NVS для відповідного каналу
                     break;
                 }
 

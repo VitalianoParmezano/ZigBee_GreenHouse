@@ -5,7 +5,8 @@
 extern "C" {
 #endif
 
-#define NUMBER_OF_CHANNEL_ENDPOINTS 3 // Кількість ендпоінтів для каналів 
+#define NUMBER_OF_CHANNEL_ENDPOINTS 3 // Кількість   для каналів 
+#define SHIFT 10 // Зсув для номерів ендпоінтів каналів (11 - перша зона 1 канал, 23 друга зона третій канал).
 
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list);
 void assign_internal_groups_after_join(void);

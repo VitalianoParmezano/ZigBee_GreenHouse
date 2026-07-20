@@ -7,12 +7,11 @@
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer);
 
 
-#define SHIFT 10 // Зсув для номерів ендпоінтів каналів (11 - перша зона 1 канал, 23 друга зона третій канал).
-
 // Глобальні змінні для кастомного кластера
-static uint8_t boot_status_dip = 1;       // Атрибут 0x0000: Статус завантаження
+static uint8_t boot_status = 0;       // Атрибут 0x0000: Статус завантаження: по-дефолту 0, після отримання даних від сервера змінюється на 1
 static uint8_t current_mode = 0;          // Атрибут 0x0001: Поточний режим роботи (0 - Manual, 1 - Auto, 2 - Timer)
 static uint8_t offline_brightness = 50;   // Атрибут 0x0002: Значення яскравості у випадку відсутності з'єднання (0-100)
+static uint16_t current_time = 0;                 // Атрибут 0x0003: Час у хвилинах (0-1439)
 /*
 * Атрибут 0x0003: Рядок октетів (Octet String) для бінарного розкладу. Таймерні сценарії.
 * * За специфікацією Zigbee ZCL, перший байт масиву типу OCTET_STRING 
@@ -106,7 +105,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         0x0000, 
         ESP_ZB_ZCL_ATTR_TYPE_U8, 
         ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, 
-        &boot_status_dip
+        &boot_status
     );
 
     // Атрибут 0x0001: Поточний режим роботи (0 - Manual, 1 - Auto, 2 - Timer)
@@ -117,23 +116,13 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
         &current_mode
     );
-
-    // Атрибут 0x0002: Значення яскравості у випадку відсутності з'єднання
+    // Атрибут 0x0002: Значення часу у хвилинах (0-1439)
     esp_zb_custom_cluster_add_custom_attr(
         custom_cluster, 
         0x0002, 
-        ESP_ZB_ZCL_ATTR_TYPE_U8, 
+        ESP_ZB_ZCL_ATTR_TYPE_U16, 
         ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
-        &offline_brightness
-    );
-
-    // Атрибут 0x0003: Бінарний масив розкладу (Octet String)
-    esp_zb_custom_cluster_add_custom_attr(
-        custom_cluster, 
-        0x0003, 
-        ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING, // Затестити з цим типом, якщо будуть проблеми, змінити тип
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
-        timer_data
+        &current_time
     );
 
     // Додавання наповненого кастомного кластера до списку кластерів другого ендпоінта
@@ -161,64 +150,64 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         .name_support = 0,
     };
 
+    //Офлайн яскравість для кожного каналу
+    static uint8_t channel_offline_brightness[NUMBER_OF_CHANNEL_ENDPOINTS] = {50, 50, 50};
+
+    //Часові мітки для кожного каналу 
+    static uint8_t channel_timer_data[NUMBER_OF_CHANNEL_ENDPOINTS][37] = {
+        {36, 0},
+        {36, 0},
+        {36, 0}
+    };
+
     //------------------------------------------------
     // ЦИКЛ СТВОРЮЄ КАНАЛИ (ЕНДПОІНТИ) ДЛЯ КЕРУВАННЯ ЯСКРАВОСТЮ
     //------------------------------------------------
     for (int i = 1; i <= NUMBER_OF_CHANNEL_ENDPOINTS; i++)
     {
-        //Створюю НОВИЙ список кластерів для КОЖНОГО ендпоінта всередині циклу
         esp_zb_cluster_list_t *cluster_list = esp_zb_zcl_cluster_list_create();
 
-
-        //Додаю On/Off
         esp_zb_cluster_list_add_on_off_cluster(cluster_list, esp_zb_on_off_cluster_create(&on_off_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-        
-        //Додаю Level Control
         esp_zb_cluster_list_add_level_cluster(cluster_list, esp_zb_level_cluster_create(&level_cluster_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-        // Керування групами:
         esp_zb_cluster_list_add_groups_cluster(cluster_list, esp_zb_groups_cluster_create(&groups_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-        // Керування сценами:
         esp_zb_cluster_list_add_scenes_cluster(cluster_list, esp_zb_scenes_cluster_create(&scenes_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-        // P.S. Групи і сцени потрібні для того щоб ендпоінти додавались у групи на рівні Z2M, 
-        // навіть якщо сцени не використовуються, вони потрібні для коректного відображення в Z2M
 
-        //Конфігурація самого Ендпоінта
-        esp_zb_endpoint_config_t level_endpoint_config = { 
-            .endpoint = i + SHIFT, // Зсув для каналів
-            .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID, 
-            .app_device_id = ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID, 
+        /*
+        * Кастомний кластер додається окремо для кожного каналу, тому дані
+        * кожного каналу зберігаються і адресуються незалежно одне від одного.
+        */
+        esp_zb_attribute_list_t *channel_custom_cluster = esp_zb_zcl_attr_list_create(0xFC01);
+
+        // Атрибут 0x0000: яскравість каналу у випадку відсутності з'єднання
+        esp_zb_custom_cluster_add_custom_attr(
+            channel_custom_cluster,
+            0x0000,
+            ESP_ZB_ZCL_ATTR_TYPE_U8,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
+            &channel_offline_brightness[i - 1]
+        );
+
+        // Атрибут 0x0001: бінарний масив розкладу (Octet String) для цього каналу
+        esp_zb_custom_cluster_add_custom_attr(
+            channel_custom_cluster,
+            0x0001,
+            ESP_ZB_ZCL_ATTR_TYPE_OCTET_STRING,
+            ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE,
+            channel_timer_data[i - 1]
+        );
+
+        esp_zb_cluster_list_add_custom_cluster(cluster_list, channel_custom_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+        esp_zb_endpoint_config_t level_endpoint_config = {
+            .endpoint = i + SHIFT,
+            .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+            .app_device_id = ESP_ZB_HA_DIMMABLE_LIGHT_DEVICE_ID,
             .app_device_version = 1
         };
 
-        // Додаємо до глобального списку
         esp_zb_ep_list_add_ep(ep_list, cluster_list, level_endpoint_config);
     }
 }
-/*
-    ESP_LOGI(TAG, "\n=== Детальна інформація про Ендпоінти пристрою ===");
-    
-    esp_zb_ep_list_t *temp = ep_list;
-    int counter = 1;
-
-    // Класичний і чистий цикл перебору зв'язного списку
-    while (temp != NULL) {
-        esp_zb_endpoint_t *ep = &temp->endpoint; 
-        
-        printf("----------------------------------------\n");
-        printf("[%d] Endpoint ID:     %d\n", counter++, ep->ep_id);
-        
-        // Profile ID зазвичай виводять у HEX (наприклад, 0x0104 - це Home Automation)
-        printf("    Profile ID:      0x%04X\n", ep->profile_id);
-        
-
-        // Переходимо до наступного вузла у списку
-        temp = temp->next;
-    }
-    printf("----------------------------------------\n");
-    printf("Усього ендпоінтів: %d\n", counter - 1);    
-}
-*/
-
 
 // перетворює uint8_t у Zigbee Pascal-рядок
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer) 
