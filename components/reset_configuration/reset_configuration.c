@@ -11,7 +11,9 @@
 #include "endpoint_config.h"
 #include "stdint.h"
 
-#include "timers.h" 
+#include "timers.h"
+
+//#include "esp_zb_switch.h"
 // #include "esp_zigbee_zdo_command.h"
 
 static bool reset_configuration_initialized = false;
@@ -53,6 +55,10 @@ static void button_single_click_cb(void *arg, void *usr_data)
         // Викликаємо очищення локальної пам'яті Zigbee (SDK саме перезавантажить плату)
         esp_zb_factory_reset(); 
     } else {
+        uint32_t a = get_current_unix_time();
+        printf("Current time: %lu \n", a);
+        //send_boot_status_report(1);
+
         ESP_LOGI(TAG, "Пристрій працює у звичайному режимі (скидання не активовано).");
     }
 }

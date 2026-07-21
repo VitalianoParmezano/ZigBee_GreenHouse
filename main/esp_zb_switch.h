@@ -28,3 +28,4 @@
     {                                                           \
         .host_connection_mode = ZB_HOST_CONNECTION_MODE_NONE,   \
     }
+void send_boot_status_report(uint8_t status_value);

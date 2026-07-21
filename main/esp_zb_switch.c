@@ -15,6 +15,7 @@
 #include "sys/time.h"
 #include "timers.h"
 
+void send_boot_status_report(uint8_t status);
 
 
 static const char *TAG = "Light_Router"; 
@@ -50,8 +51,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
                 esp_zb_get_long_address(ieee); // Зчитуємо власну MAC-адресу
                 ESP_LOGI(TAG, "✅ Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
-
+                send_boot_status_report(0);
                 timer_init(); // Ініціалізуємо таймер для синхронізації часу з координатором
+                
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
                 ESP_LOGW(TAG, "❌ Пошук мережі невдалий. Повторна спроба через 5 секунд...");
@@ -247,7 +249,52 @@ static void zigbee_task(void *arg) {
     }
 }
 
+// Функція обов'язково має приймати (uint8_t param) для сумісності з будильником!
+void send_boot_status_report(uint8_t status_value) {
+    status_value = 0;
+    esp_zb_lock_acquire(portMAX_DELAY);
 
+    esp_err_t err = esp_zb_zcl_set_attribute_val(
+        2,                                // Ендпоінт
+        0xFF01,                           // Кластер
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,   // Роль
+        0x0000,                           // ID атрибута (boot_status)
+        &status_value,                    // Значення
+        false                             // Не викликати локальний колбек
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE("BOOT_SYNC", "Помилка запису в локальний атрибут: %s", esp_err_to_name(err));
+        esp_zb_lock_release();
+        return;
+    }
+
+    esp_zb_zcl_report_attr_cmd_t report_cmd = {
+        .zcl_basic_cmd = {
+            .dst_addr_u.addr_short = 0x0000, // Адреса координатора
+            .dst_endpoint = 1,               // Ендпоінт координатора
+            .src_endpoint = 2,               // Наш ендпоінт
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .clusterID = 0xFF01,
+        .attributeID = 0x0000,               // ID атрибута має збігатися з тим, що писали вище!
+        
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .dis_default_resp = 0,
+        
+        .manuf_specific = 0,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC
+    };
+    
+    err = esp_zb_zcl_report_attr_cmd_req(&report_cmd);
+    esp_zb_lock_release();
+
+    if (err == ESP_OK) {
+        ESP_LOGI("BOOT_SYNC","boot_status відправлено" " (boot_status = %d)", status_value);
+    } else {
+        ESP_LOGE("BOOT_SYNC", "Помилка відправки радіопакета: %s", esp_err_to_name(err));
+    }
+}
 // ==========================================
 // ТОЧКА ВХОДУ В ПРОГРАМУ (MAIN)
 // ==========================================
@@ -270,6 +317,7 @@ void app_main(void) {
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
     // "zigbee_task" - назва, 4096 - розмір пам'яті для задачі (стек), 5 - пріоритет (досить високий)
     xTaskCreate(zigbee_task, "zigbee_task", 4096, NULL, 5, NULL);
+    
     
 
 }
