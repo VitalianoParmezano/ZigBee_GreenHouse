@@ -4,27 +4,12 @@ const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const e = exposes.presets;
 const ea = exposes.access;
 
-// ---------------------------------------------------------------------------
-// Кластери
-// ---------------------------------------------------------------------------
-// УВАГА: у поточній прошивці системний кластер (EP2) ще лишається 0xFF01,
-// тоді як канальний кластер (EP11-13) вже переведений на 0xFC01.
-// 0xFF01 історично зарезервований під Xiaomi/Aqara-специфічний парсинг
-// у zigbee-herdsman-converters, тож рекомендується перевести EP2 на 0xFC01
-// теж, щоб уникнути потенційних конфліктів. Тут використані значення,
-// які відповідають прошивці РІВНО ЗАРАЗ.
-const SYSTEM_CLUSTER = 0xFF01; // TODO: перевести на 0xFC01, як у каналах
+const SYSTEM_CLUSTER = 0xFF01;
 const CHANNEL_CLUSTER = 0xFC01;
 
-// ---------------------------------------------------------------------------
-// Мапінг режимів роботи
-// ---------------------------------------------------------------------------
-const MODE_MAP = {0: 'manual', 1: 'auto', 2: 'timer'};
-const MODE_MAP_REVERSE = {manual: 0, auto: 1, timer: 2};
+const MODE_MAP = { 0: 'manual', 1: 'auto', 2: 'timer' };
+const MODE_MAP_REVERSE = { manual: 0, auto: 1, timer: 2 };
 
-// ---------------------------------------------------------------------------
-// Робота з часом
-// ---------------------------------------------------------------------------
 function minutesToTime(totalMinutes) {
     const h = Math.floor(totalMinutes / 60);
     const m = totalMinutes % 60;
@@ -40,32 +25,20 @@ function timeToMinutes(timeStr) {
     return h * 60 + m;
 }
 
-// ---------------------------------------------------------------------------
-// Пакування/розпакування бінарного розкладу (time_mark_t: uint16 LE + uint8)
-// ---------------------------------------------------------------------------
 const MAX_SCENARIOS = 12;
 const BYTES_PER_SCENARIO = 3;
 
 function decodeScenarios(buffer) {
     if (!Buffer.isBuffer(buffer)) return [];
-
     const count = Math.floor(buffer.length / BYTES_PER_SCENARIO);
     const scenarios = [];
-
     for (let i = 0; i < count; i++) {
         const offset = i * BYTES_PER_SCENARIO;
         const minute = buffer.readUInt16LE(offset);
         const brightness = buffer.readUInt8(offset + 2);
-
-        // Незаповнені (нульові) мітки після реальних даних пропускаються.
-        // Це евристика: якщо прошивка коректно оновлює довжину octet string
-        // при кожному записі, цей фільтр стає зайвим, але лишається як
-        // страховка на випадок застарілої довжини атрибута.
         if (minute === 0 && brightness === 0 && i > 0) continue;
-
-        scenarios.push({time: minutesToTime(minute), brightness});
+        scenarios.push({ time: minutesToTime(minute), brightness });
     }
-
     return scenarios;
 }
 
@@ -74,53 +47,39 @@ function encodeScenarios(scenarios) {
         throw new Error('scenarios має бути масивом об\'єктів {time, brightness}');
     }
     if (scenarios.length > MAX_SCENARIOS) {
-        throw new Error(`Максимум ${MAX_SCENARIOS} сценаріїв на канал, отримано ${scenarios.length}`);
+        throw new Error(`Максимум ${MAX_SCENARIOS} сценаріїв на канал`);
     }
-
-    // Сортування за часом виконується на стороні Z2M перед відправкою,
-    // щоб прошивка отримувала вже впорядкований масив і не сортувала сама
     const sorted = [...scenarios].sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
-
     const buffer = Buffer.alloc(sorted.length * BYTES_PER_SCENARIO);
-
     sorted.forEach((s, i) => {
         const minute = timeToMinutes(s.time);
         const brightness = Number(s.brightness);
-
-        if (minute < 0 || minute > 1439) {
-            throw new Error(`Час поза межами доби: ${s.time}`);
-        }
-        if (Number.isNaN(brightness) || brightness < 0 || brightness > 100) {
-            throw new Error(`Некоректна яскравість: ${s.brightness}`);
-        }
-
         const offset = i * BYTES_PER_SCENARIO;
         buffer.writeUInt16LE(minute, offset);
         buffer.writeUInt8(brightness, offset + 2);
     });
-
     return buffer;
 }
 
-// ---------------------------------------------------------------------------
-// fromZigbee: пристрій -> HA
-// ---------------------------------------------------------------------------
+// fzLocal
 const fzLocal = {
     system: {
         cluster: SYSTEM_CLUSTER.toString(),
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const result = {};
+            // Перевіряємо, що пакет прийшов з 2-го ендпоінта
+            if (msg.endpoint.ID !== 2) return;
 
-            if (msg.data.hasOwnProperty('0')) {
-                result.boot_status = msg.data['0'];
-            }
-            if (msg.data.hasOwnProperty('1')) {
-                result.mode = MODE_MAP[msg.data['1']] ?? 'unknown';
-            }
-            if (msg.data.hasOwnProperty('2')) {
-                result.device_time = minutesToTime(msg.data['2']);
-            }
+            const d = msg.data;
+            const bootVal = d['0'] ?? d[0];
+            if (bootVal !== undefined) result.boot_status = Number(bootVal);
+
+            const modeVal = d['1'] ?? d[1];
+            if (modeVal !== undefined) result.mode = MODE_MAP[modeVal] ?? 'unknown';
+
+            const timeVal = d['2'] ?? d[2];
+            if (timeVal !== undefined) result.device_time = minutesToTime(timeVal);
 
             return result;
         },
@@ -131,105 +90,100 @@ const fzLocal = {
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const result = {};
-
             if (msg.data.hasOwnProperty('0')) {
                 result.offline_brightness = msg.data['0'];
             }
             if (msg.data.hasOwnProperty('1')) {
                 result.scenarios = JSON.stringify(decodeScenarios(msg.data['1']));
             }
-
             return result;
         },
     },
 };
 
-// ---------------------------------------------------------------------------
-// toZigbee: HA -> пристрій
-// ---------------------------------------------------------------------------
+// tzLocal
 const tzLocal = {
     boot_status: {
         key: ['boot_status'],
-        convertSet: async (entity, key, value, meta) => {
-            await entity.write(SYSTEM_CLUSTER, {0: {value: Number(value), type: 0x20}}); // uint8
-            return {state: {boot_status: Number(value)}};
+        convertSet: async(entity, key, value, meta) => {
+            const endpoint = meta.device.getEndpoint(2); // Жорстко б'ємо в EP 2
+            await endpoint.write(SYSTEM_CLUSTER, { 0: { value: Number(value), type: 0x20 } });
+            return { state: { boot_status: Number(value) } };
         },
-        convertGet: async (entity, key, meta) => {
-            await entity.read(SYSTEM_CLUSTER, [0]);
+        convertGet: async(entity, key, meta) => {
+            const endpoint = meta.device.getEndpoint(2);
+            await endpoint.read(SYSTEM_CLUSTER, [0]);
         },
     },
 
     mode: {
         key: ['mode'],
-        convertSet: async (entity, key, value, meta) => {
+        convertSet: async(entity, key, value, meta) => {
+            const endpoint = meta.device.getEndpoint(2);
             const numeric = typeof value === 'string' ? MODE_MAP_REVERSE[value] : value;
-            if (numeric === undefined) {
-                throw new Error(`Невідомий режим: ${value} (очікується manual/auto/timer)`);
-            }
-            await entity.write(SYSTEM_CLUSTER, {1: {value: numeric, type: 0x20}}); // uint8
-            return {state: {mode: MODE_MAP[numeric]}};
+            await endpoint.write(SYSTEM_CLUSTER, { 1: { value: numeric, type: 0x20 } });
+            return { state: { mode: MODE_MAP[numeric] } };
         },
-        convertGet: async (entity, key, meta) => {
-            await entity.read(SYSTEM_CLUSTER, [1]);
+        convertGet: async(entity, key, meta) => {
+            const endpoint = meta.device.getEndpoint(2);
+            await endpoint.read(SYSTEM_CLUSTER, [1]);
         },
     },
 
     device_time: {
         key: ['device_time'],
-        convertSet: async (entity, key, value, meta) => {
-            // value приходить у форматі "HH:MM" (зазвичай від періодичної
-            // автоматизації HA, а не від ручного вводу користувача)
+        convertSet: async(entity, key, value, meta) => {
+            const endpoint = meta.device.getEndpoint(2);
             const minutes = timeToMinutes(value);
-            await entity.write(SYSTEM_CLUSTER, {2: {value: minutes, type: 0x21}}); // uint16
-            return {state: {device_time: value}};
+            await endpoint.write(SYSTEM_CLUSTER, { 2: { value: minutes, type: 0x21 } });
+            return { state: { device_time: value } };
         },
-        convertGet: async (entity, key, meta) => {
-            await entity.read(SYSTEM_CLUSTER, [2]);
+        convertGet: async(entity, key, meta) => {
+            const endpoint = meta.device.getEndpoint(2);
+            await endpoint.read(SYSTEM_CLUSTER, [2]);
         },
     },
 
     offline_brightness: {
         key: ['offline_brightness'],
-        convertSet: async (entity, key, value, meta) => {
-            await entity.write(CHANNEL_CLUSTER, {0: {value: Number(value), type: 0x20}}); // uint8
-            return {state: {offline_brightness: Number(value)}};
+        convertSet: async(entity, key, value, meta) => {
+            await entity.write(CHANNEL_CLUSTER, { 0: { value: Number(value), type: 0x20 } });
+            return { state: { offline_brightness: Number(value) } };
         },
-        convertGet: async (entity, key, meta) => {
+        convertGet: async(entity, key, meta) => {
             await entity.read(CHANNEL_CLUSTER, [0]);
         },
     },
 
     scenarios: {
         key: ['scenarios'],
-        convertSet: async (entity, key, value, meta) => {
-            // value приходить як JSON-рядок:
-            // [{"time":"07:30","brightness":80}, {"time":"19:00","brightness":20}]
+        convertSet: async(entity, key, value, meta) => {
             const parsed = typeof value === 'string' ? JSON.parse(value) : value;
             const buffer = encodeScenarios(parsed);
-            await entity.write(CHANNEL_CLUSTER, {1: {value: buffer, type: 0x41}}); // Octet String
-            return {state: {scenarios: JSON.stringify(parsed)}};
+            await entity.write(CHANNEL_CLUSTER, { 1: { value: buffer, type: 0x41 } });
+            return { state: { scenarios: JSON.stringify(parsed) } };
         },
-        convertGet: async (entity, key, meta) => {
+        convertGet: async(entity, key, meta) => {
             await entity.read(CHANNEL_CLUSTER, [1]);
         },
     },
 };
 
-// ---------------------------------------------------------------------------
-// Визначення пристрою
-// ---------------------------------------------------------------------------
 function channelExposes(endpointName, label) {
     return [
-        e.light_brightness().withEndpoint(endpointName).withDescription(`Світло: ${label}`),
-        e.numeric('offline_brightness', ea.ALL)
-            .withValueMin(0).withValueMax(100)
-            .withEndpoint(endpointName)
-            .withDescription(`Яскравість "${label}" за відсутності зв'язку`),
-        e.text('scenarios', ea.ALL)
-            .withEndpoint(endpointName)
-            .withDescription(
-                `Сценарії "${label}", JSON-масив: [{"time":"07:30","brightness":80}]`,
-            ),
+        exposes.presets.light_brightness()
+        .withEndpoint(endpointName)
+        .withDescription(`Світло: ${label}`),
+
+        exposes.presets.numeric('offline_brightness', exposes.access.ALL)
+        .withValueMin(0)
+        .withValueMax(100)
+        .withEndpoint(endpointName)
+        .withDescription(`Яскравість "${label}" за відсутності зв'язку`),
+
+        exposes.presets.text('scenarios', exposes.access.ALL)
+        .withEndpoint(endpointName)
+        .withDescription(`Часові мітки "${label}"`),
     ];
 }
 
@@ -239,10 +193,11 @@ const definition = {
     vendor: 'ESV',
     description: 'Контролер освітлення теплиці з таймерними сценаріями по каналах',
 
-    meta: {multiEndpoint: true},
+    meta: { multiEndpoint: true },
 
+    // ВИДАЛИЛИ 'system: 2' зв'язку з мульти-ендпоінтом! 
+    // Тепер мапінг стосується лише каналів l1, l2, l3:
     endpoint: (device) => ({
-        system: 2,
         l1: 11,
         l2: 12,
         l3: 13,
@@ -259,17 +214,17 @@ const definition = {
     ],
 
     exposes: [
+        // БЕЗ .withEndpoint('system') -> Z2M опублікує їх БЕЗ суфіксів!
         e.numeric('boot_status', ea.ALL)
-            .withEndpoint('system')
-            .withDescription('0 = потрібна синхронізація, 1 = синхронізовано (пишеться HA після хендшейку)'),
+            .withDescription('0 = потрібна синхронізація, 1 = синхронізовано')
+            .withValueMax(1)
+            .withValueMin(0),
 
         e.enum('mode', ea.ALL, ['manual', 'auto', 'timer'])
-            .withEndpoint('system')
             .withDescription('Режим роботи пристрою'),
 
         e.text('device_time', ea.ALL)
-            .withEndpoint('system')
-            .withDescription('Поточний час на пристрої, HH:MM (періодично пишеться автоматизацією HA)'),
+            .withDescription('Поточний час на пристрої, HH:MM'),
 
         ...channelExposes('l1', 'Канал 1'),
         ...channelExposes('l2', 'Канал 2'),
