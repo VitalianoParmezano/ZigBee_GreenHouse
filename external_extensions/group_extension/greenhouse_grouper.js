@@ -74,6 +74,7 @@ class AutoGrouper {
         console.log(`🌿 [AutoGrouper] Device joined: ${data.device.ieeeAddr}`);
     }
 
+    // Інтерв'ю девайсів, коли новий девай конектиться
     async onDeviceInterview(data) {
         if (data.status !== 'successful') return;
 
@@ -85,6 +86,7 @@ class AutoGrouper {
         });
         console.log(`🌿 [AutoGrouper] Фоновий процес запущено, головний потік вільний для інших задач.`);
     }
+
     // Перевірка bootMode
     async onStateChange(data) {
         // data містить: { entity (об'єкт пристрою/групи), from (старий стан), to (новий стан) }
@@ -96,10 +98,10 @@ class AutoGrouper {
         const oldBootStatus = data.from?.boot_status;
         
 
-        console.log(`\n Пристрій: ${data.entity.name}`);
-        console.log(`\n Старий стан (from):`, JSON.stringify(data.from, null, 2));
-        console.log(`\n Новий стан (to):   `, JSON.stringify(data.to, null, 2));
-        console.log(`\n Що змінилося (update):`, JSON.stringify(data.update, null, 2));
+        // console.log(`\n Пристрій: ${data.entity.name}`);
+        // console.log(`\n Старий стан (from):`, JSON.stringify(data.from, null, 2));
+        // console.log(`\n Новий стан (to):   `, JSON.stringify(data.to, null, 2));
+        // console.log(`\n Що змінилося (update):`, JSON.stringify(data.update, null, 2));
         
         const basicEndpoint = data.entity.zh.getEndpoint(1);
         const result = await basicEndpoint.read('genBasic', ['productLabel']);
@@ -107,23 +109,15 @@ class AutoGrouper {
         console.log(`\n product label is:`, JSON.stringify(result,null, 2));
 
         if (data.update && data.update.boot_status === 0) {
-            console.log(`\n🌿 [UPDATE TRIGGER] Отримано свіжий пакет: boot_status = 0 для ${data.entity.name}!`);
+            console.log(`\n🌿 Отримано свіжий пакет: boot_status = 0 для ${data.entity.name}!`);
             
             this.setupGroupsInBackground(data.entity).catch((err) => {
                 console.error(`🌿 [AutoGrouper] Device configuration failure (via update): ${err.message}`);
             });
             
-            // Робимо return, щоб не викликати setupGroupsInBackground вдруге нижче, 
-            // якщо одночасно спрацює і друга умова
             return; 
         }
-        if (newBootStatus === 0 && oldBootStatus !== 0) {
-            console.log(`\n🌿 Пристрій ${data.entity.name} скинув boot_status у 0!`);
-            
-            this.setupGroupsInBackground(data.entity).catch((err) => {
-                console.error(`🌿 [AutoGrouper] Device configuration failure: ${err.message}`);
-            });
-        }
+
     }
 
     // Вся логіка з MQTT винесена в окремий фоновий метод

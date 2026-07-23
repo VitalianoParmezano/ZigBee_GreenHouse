@@ -7,8 +7,8 @@ const ea = exposes.access;
 const SYSTEM_CLUSTER = 0xFF01;
 const CHANNEL_CLUSTER = 0xFC01;
 
-const MODE_MAP = { 0: 'manual', 1: 'auto', 2: 'timer' };
-const MODE_MAP_REVERSE = { manual: 0, auto: 1, timer: 2 };
+const MODE_MAP = { 0: 'manual', 1: 'timer', 2: 'auto' };
+const MODE_MAP_REVERSE = { manual: 0, timer: 1, auto: 2 };
 
 function minutesToTime(totalMinutes) {
     const h = Math.floor(totalMinutes / 60);
@@ -220,7 +220,7 @@ const definition = {
             .withValueMax(1)
             .withValueMin(0),
 
-        e.enum('mode', ea.ALL, ['manual', 'auto', 'timer'])
+        e.enum('mode', ea.ALL, ['manual', 'timer', 'auto'])
             .withDescription('Режим роботи пристрою'),
 
         e.text('device_time', ea.ALL)
