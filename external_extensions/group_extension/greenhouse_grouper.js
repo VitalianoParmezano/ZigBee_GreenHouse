@@ -61,6 +61,7 @@ class AutoGrouper {
         this.eventBus.onDeviceInterview(this, this.onDeviceInterview.bind(this));
         this.eventBus.onDeviceJoined(this, this.onDeviceJoined.bind(this));
 
+        this.eventBus.onStateChange(this, this.onStateChange.bind(this));
         //this.eventBus.onDeviceLeave(this, this.onDeviceLeave.bind(this));
     }
 
@@ -79,12 +80,53 @@ class AutoGrouper {
         console.log(`🌿 [AutoGrouper] Interview successful for: ${data.device.ieeeAddr}. Запускаю фоновий процес...`);
 
         this.setupGroupsInBackground(data.device).catch((err) => {
+            
             console.error(`🌿 [AutoGrouper] ❌ Помилка у фоновому процесі: ${err.message}`);
         });
         console.log(`🌿 [AutoGrouper] Фоновий процес запущено, головний потік вільний для інших задач.`);
     }
+    // Перевірка bootMode
+    async onStateChange(data) {
+        // data містить: { entity (об'єкт пристрою/групи), from (старий стан), to (новий стан) }
+        
+        if (!data.entity || data.entity.isGroup()) return;
 
-    // Вся наша важка логіка з MQTT винесена в окремий фоновий метод
+        // Приклад: ловимо зміну нашого boot_status
+        const newBootStatus = data.to?.boot_status;
+        const oldBootStatus = data.from?.boot_status;
+        
+
+        console.log(`\n Пристрій: ${data.entity.name}`);
+        console.log(`\n Старий стан (from):`, JSON.stringify(data.from, null, 2));
+        console.log(`\n Новий стан (to):   `, JSON.stringify(data.to, null, 2));
+        console.log(`\n Що змінилося (update):`, JSON.stringify(data.update, null, 2));
+        
+        const basicEndpoint = data.entity.zh.getEndpoint(1);
+        const result = await basicEndpoint.read('genBasic', ['productLabel']);
+        
+        console.log(`\n product label is:`, JSON.stringify(result,null, 2));
+
+        if (data.update && data.update.boot_status === 0) {
+            console.log(`\n🌿 [UPDATE TRIGGER] Отримано свіжий пакет: boot_status = 0 для ${data.entity.name}!`);
+            
+            this.setupGroupsInBackground(data.entity).catch((err) => {
+                console.error(`🌿 [AutoGrouper] Device configuration failure (via update): ${err.message}`);
+            });
+            
+            // Робимо return, щоб не викликати setupGroupsInBackground вдруге нижче, 
+            // якщо одночасно спрацює і друга умова
+            return; 
+        }
+        if (newBootStatus === 0 && oldBootStatus !== 0) {
+            console.log(`\n🌿 Пристрій ${data.entity.name} скинув boot_status у 0!`);
+            
+            this.setupGroupsInBackground(data.entity).catch((err) => {
+                console.error(`🌿 [AutoGrouper] Device configuration failure: ${err.message}`);
+            });
+        }
+    }
+
+    // Вся логіка з MQTT винесена в окремий фоновий метод
     async setupGroupsInBackground(device) {
         console.log(`\n🌿 [AutoGrouper-BG] Фоновий процес для ${device.ieeeAddr} почався...`);
         await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -119,12 +161,12 @@ class AutoGrouper {
             console.log(`\n🌿 [AutoGrouper-BG] Обробка групи ${groupName} (ID: ${group_ID})...`);
 
             // ---------------------------------------------------------------
-            // Крок 1: створення групи, з перевіркою, чи вона вже існувала.
+            // створення групи, з перевіркою, чи вона вже існувала.
             // ---------------------------------------------------------------
             const groupAlreadyExisted = await this.ensureGroupExists(groupName, group_ID);
 
             // ---------------------------------------------------------------
-            // Крок 2: додавання ендпоінту цього пристрою до групи
+            // додавання ендпоінту цього пристрою до групи
             // ---------------------------------------------------------------
             console.log(`🌿 [AutoGrouper-BG] Ін'єкція bridge/request/group/members/add...`);
             this.eventBus.emitMQTTMessage({
@@ -139,7 +181,7 @@ class AutoGrouper {
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
             // ---------------------------------------------------------------
-            // Крок 3: якщо група вже існувала — синхронізуємо нового члена
+            // якщо група вже існувала — синхронізуємо нового члена
             // з останнім відомим станом ГРУПИ (не якогось довільного пристрою).
             // ---------------------------------------------------------------
             if (groupAlreadyExisted) {
@@ -149,6 +191,17 @@ class AutoGrouper {
             }
 
             console.log(`🌿 [AutoGrouper-BG] Канал ${channelName} успішно налаштовано.`);
+        }
+        // Встановлення бут статусу в 1
+        const systemEndpoint = device.zh.getEndpoint(2);
+        if (systemEndpoint) {
+            try {
+                console.log(`🌿 [AutoGrouper-BG] Запис boot_status = 1 в EP2...`);
+                await systemEndpoint.write(0xFF01, { 0x0000: { value: 1, type: 0x20 } });
+                console.log(`🌿 [AutoGrouper-BG] ✅ boot_status = 1 успішно встановлено!`);
+            } catch (err) {
+                console.error(`🌿 [AutoGrouper-BG] ❌ Помилка запису boot_status: ${err.message}`);
+            }
         }
     }
 
@@ -242,14 +295,26 @@ class AutoGrouper {
      * (безпечний варіант: краще спробувати додати член у групу, що вже
      * може існувати, ніж помилково вважати її новою і пропустити синхронізацію).
      */
-    async ensureGroupExists(groupName, group_ID) {
+async ensureGroupExists(groupName, group_ID) {
+        // =========================================================================
+        // Локальна перевірка в пам'яті (БЕЗ MQTT-запиту і помилок у лозі)
+        // =========================================================================
+        const existingGroup = this.zigbee.resolveEntity(groupName) ?? this.zigbee.groupByID(group_ID);
+        
+        if (existingGroup && existingGroup.isGroup && existingGroup.isGroup()) {
+            console.log(`🌿 [AutoGrouper-BG] Група "${groupName}" (ID: ${group_ID}) вже існує в базі Z2M.`);
+            return true;
+        }
+
+        // =========================================================================
+        // Якщо групи немає — створюємо її через MQTT
+        // =========================================================================
+        console.log(`🌿 [AutoGrouper-BG] Групу не знайдено. Ін'єкція bridge/request/group/add для "${groupName}"...`);
+
         const responsePromise = this.waitForBridgeResponse(
             'zigbee2mqtt/bridge/response/group/add',
             (payload) => {
-                // Успішне створення: відповідь містить id/friendly_name у data
                 if (payload?.data?.id === group_ID || payload?.data?.friendly_name === groupName) return true;
-                // Колізія: Z2M повертає текстову помилку типу
-                // "friendly_name 'Zone_1_Channel_2' is already in use", без data.id
                 if (payload?.status === 'error' && typeof payload?.error === 'string' && payload.error.includes(groupName)) {
                     return true;
                 }
@@ -258,23 +323,20 @@ class AutoGrouper {
             BRIDGE_RESPONSE_TIMEOUT_MS,
         );
 
-        console.log(`🌿 [AutoGrouper-BG] Ін'єкція bridge/request/group/add...`);
         this.eventBus.emitMQTTMessage({
             topic: 'zigbee2mqtt/bridge/request/group/add',
-            message: JSON.stringify({friendly_name: groupName, id: group_ID}),
+            message: JSON.stringify({ friendly_name: groupName, id: group_ID }),
         });
 
         const response = await responsePromise;
 
         if (response?.status === 'ok') {
-            console.log(`🌿 [AutoGrouper-BG] Групу "${groupName}" створено вперше.`);
+            console.log(`🌿 [AutoGrouper-BG] ✅ Групу "${groupName}" створено вперше.`);
             return false;
         }
 
-        console.log(
-            `🌿 [AutoGrouper-BG] Групу "${groupName}" не створено (ймовірно, вже існує, або таймаут відповіді) — ` +
-            `продовжую роботу з нею як з наявною.`,
-        );
+        // Страховка на випадок колізії, якщо група була створена кимось паралельно
+        console.log(`🌿 [AutoGrouper-BG] ⚠️ Відповідь бриджа: ${response?.status ?? 'timeout'}. Продовжую роботу як з наявною.`);
         return true;
     }
 
