@@ -210,8 +210,6 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     }
 }
 
-static uint16_t time_attributes_to_read[] = { ESP_ZB_ZCL_ATTR_TIME_TIME_ID }; // 0x0000
-
 void request_time_from_coordinator(void) {
    	ESP_LOGI(TAG, "Requesting time from coordinator...");
 
