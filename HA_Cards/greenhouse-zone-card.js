@@ -40,8 +40,17 @@ function clampPercent(value) {
 
 class GreenhouseZoneCard extends HTMLElement {
 
+    constructor() {
+        super();
+        this._mqttSubscribed = false; // Замок від повторних підписок
+        this._z2mGroups = [];         // Масив для збереження даних з MQTT
+        this._unsubMqtt = null;       // Функція відписки при закритті сторінки
+    }
+
     setConfig(config) {
         this.config = config;
+        console.log("Перевірка чи сюди дійшов код 2");
+
     }
 
     getGridOptions() {
@@ -57,8 +66,15 @@ class GreenhouseZoneCard extends HTMLElement {
         return 4;
     }
 
-    set hass(hass) {
+ set hass(hass) {
         this._hass = hass;
+
+        // Якщо ми ще не підписані, а Home Assistant вже передав робоче з'єднання:
+        if (!this._mqttSubscribed && this._hass && this._hass.connection) {
+            this._mqttSubscribed = true; // Замикаємо замок
+            this._subscribeToMqtt();     // Запускаємо WebSocket-запит
+        }
+        // ------------------------------------
 
         if (!this.content) {
             this._buildBaseLayout();
@@ -66,8 +82,6 @@ class GreenhouseZoneCard extends HTMLElement {
 
         this._updateZoneStatuses(hass);
 
-        // Якщо модальне вікно зараз відкрите — оновлюємо його вміст живими даними
-        // (наприклад, якщо стан прийшов з пристрою, а не тільки з локальних дій людини)
         if (this._modalState && this._modalState.open) {
             this._refreshModalLiveValues();
         }
@@ -347,6 +361,7 @@ class GreenhouseZoneCard extends HTMLElement {
             cell.addEventListener('click', () => this._openZoneModal(i));
             this.content.appendChild(cell);
         }
+
     }
 
     // -------------------------------------------------------------------
@@ -383,10 +398,10 @@ class GreenhouseZoneCard extends HTMLElement {
     // -------------------------------------------------------------------
     // Модальне вікно
     // -------------------------------------------------------------------
-    // -------------------------------------------------------------------
-    // Модальне вікно (Виправлена версія)
-    // -------------------------------------------------------------------
     _openZoneModal(zone) {
+        //absolute = this._getGroupMembersByGroupName(`Zone_${zone}_Channel_1`);
+
+
         const hass = this._hass;
         const modeState = hass.states[modeEntity(zone)];
         const currentMode = modeState ? modeState.state : 'manual';
@@ -599,7 +614,7 @@ class GreenhouseZoneCard extends HTMLElement {
         this._renderModeRow();
         this._renderTabsRow();
         this._renderModalBody();
-        console.log("Код дійшов до кінця тої функції");
+
 
     }
 
@@ -860,6 +875,76 @@ class GreenhouseZoneCard extends HTMLElement {
         // зміні режиму/вкладки. Живий стан плиток зон оновлюється окремо
         // в _updateZoneStatuses(), що покриває основний випадок використання.
     }
+
+    // Стосується логіки з MQTT 
+    _getGroupMembersByGroupName(groupName) {
+
+        console.log('group name received: ', groupName);
+        if (!Array.isArray(this._z2mGroups)) {
+            console.warn(`[Greenhouse] Дані з MQTT ще не завантажені! Неможливо знайти "${groupName}".`);
+            return [];
+        }
+
+        const targetGroup = this._z2mGroups.find(g => g.friendly_name === groupName);
+
+        if (!targetGroup) {
+            console.warn(`[Greenhouse] Групу "${groupName}" не знайдено в базі Z2M!`);
+            return [];
+        }
+        return (targetGroup.members || []).map(member => member.ieee_address);;
+    }
+
+    // --- МЕТОД ПІДПИСКИ НА MQTT ЧЕРЕЗ WEBSOCKET ---
+    async _subscribeToMqtt() {
+        console.log("🚀 [MQTT Direct] Спроба підписки на zigbee2mqtt/bridge/groups...");
+        try {
+            this._unsubMqtt = await this._hass.connection.subscribeMessage(
+                (message) => {
+                    try {
+                        this._z2mGroups = JSON.parse(message.payload);
+                        console.group("Отримано топологію з Z2M!");
+                        console.log("Масив груп готовий до використання в JS");
+                        console.groupEnd();
+                    } catch (e) {
+                        console.error("[Greenhouse] Помилка парсингу JSON з MQTT:", e);
+                    }
+                },
+                {
+                    type: 'mqtt/subscribe',
+                    topic: 'zigbee2mqtt/bridge/groups'
+                }
+            );
+            console.log("✓ [MQTT Direct] Підписку успішно оформлено!");
+        } catch (err) {
+            console.error("❌ [MQTT Direct] Помилка підписки (перевір права користувача):", err);
+            this._mqttSubscribed = false; // Відкриваємо замок, щоб спробувати ще раз при наступному оновленні
+        }
+    }
+
+    // --- 4. ОЧИЩЕННЯ ПРИ ВИДАЛЕННІ КАРТКИ З ЕКРАНА ---
+    disconnectedCallback() {
+        if (this._unsubMqtt) {
+            this._unsubMqtt();
+            this._unsubMqtt = null;
+            this._mqttSubscribed = false;
+        }
+    }
+
+    handleMqttResponse(payloadString) {
+    try {
+        const data = JSON.parse(payloadString);
+        // Тут ви отримуєте чистий масив об'єктів груп
+        console.log("Отримані групи Z2M:", data); 
+        
+        // Збережіть дані в стейт картки та запустіть рендер
+        this.z2mGroups = data; 
+        this.requestUpdate(); // Якщо використовуєте LitElement
+    } catch (e) {
+        console.error("Помилка парсингу JSON з MQTT", e);
+    }
+    }
+        
+    
 }
 
 window.customCards = window.customCards || [];
@@ -868,5 +953,7 @@ window.customCards.push({
     name: 'GreenHouse Zone',
     description: 'Велика плитка керування зонами',
 });
+
+
 
 customElements.define('greenhouse-zone-card', GreenhouseZoneCard);
