@@ -862,6 +862,9 @@ class GreenhouseZoneCard extends HTMLElement {
             setTimeout(() => {
                 if (saveBtn) saveBtn.innerText = 'Зберегти розклад';
             }, 1500);
+        
+            this._sendDataByGroupName(`Zone_${zone}_Channel_${channel}`, JSON.stringify(scenarios), `scenarios`)
+        
         });
     }
 
@@ -944,7 +947,86 @@ class GreenhouseZoneCard extends HTMLElement {
     }
     }
         
-    
+    /**
+     *  Метод для відправки даних на пристрій за його IEEE-адресою
+     * @param {string} ieeeAddress - MAC-адреса плати (напр. "0x4831b7fffecf3772")
+     * @param {Object} payload - Об'єкт з даними для відправки (напр. { brightness_l1: 100 })
+     * @param {string} topicSuffix - Суфікс топіка: '/set' (команда) або '/get' (запит)
+     */
+    async _sendDataByIEEE(ieeeAddress, payload, topicSuffix = '/set') {
+        if (!this._hass) {
+            console.error('[Greenhouse] Неможливо відправити MQTT: this._hass не ініціалізовано!');
+            return;
+        }
+
+        if (!ieeeAddress) {
+            console.error('[Greenhouse] IEEE-адреса не вказана!');
+            return;
+        }
+
+        // 1. Формуємо повний MQTT-топік (наприклад: "zigbee2mqtt/0x4831b7fffecf3772/set")
+        const fullTopic = `zigbee2mqtt/${ieeeAddress}${topicSuffix}`;
+
+        // 2. Якщо payload передано як об'єкт — перетворюємо на JSON-рядок
+        const payloadString = typeof payload === 'object' ? JSON.stringify(payload) : String(payload);
+
+        console.log(`📡 [MQTT Publish] -> Топік: "${fullTopic}" | Пейлоад:`, payloadString);
+
+        try {
+            // 3. Викливаємо системний сервіс Home Assistant для публікації в MQTT
+            await this._hass.callService('mqtt', 'publish', {
+                topic: fullTopic,
+                payload: payloadString
+            });
+            console.log(`✓ [MQTT Publish] Успішно відправлено на ${ieeeAddress}`);
+        } catch (error) {
+            console.error(`❌ [MQTT Publish] Помилка відправки на ${ieeeAddress}:`, error);
+        }
+    }
+
+    /**
+     * Диспетчер відправки даних на групу
+     * @param {string} groupName - Назва групи (напр. "Zone_1_Channel_1")
+     * @param {any} payload - Значення (масив розкладу, число, рядок або об'єкт)
+     * @param {string} type - Тип команди: 'scenarios', 'offline_brightness', 'mode', 'manual' або 'raw'
+     * @param {number} delayMs - Затримка між відправками (мс)
+     */
+    async _sendDataByGroupName(groupName, payload, type = 'raw', delayMs = 250) {
+        const ieeeList = this._getGroupMembersByGroupName(groupName);
+
+        if (!ieeeList || ieeeList.length === 0) {
+            console.warn(`⚠️ [Greenhouse] Група "${groupName}" порожня або не знайдена в базі Z2M!`);
+            return;
+        }
+
+        const channelMatch = groupName.match(/channel_(\d+)/i);
+        const channel = channelMatch ? Number(channelMatch[1]) : 1;
+
+        console.group(`🚀 [Group Send] Група: "${groupName}" | Тип: [${type}] | Канал: l${channel}`);
+        
+        const formattedPayload = {
+            [`${type}_l${channel}`]: payload
+        };
+
+        //const result = JSON.stringify(formattedPayload);
+
+        console.log(formattedPayload);
+
+        for (let i = 0; i < ieeeList.length; i++) {
+            const mac = ieeeList[i];
+            console.log(`[${i + 1}/${ieeeList.length}] Надсилання на MAC: ${mac}`);
+
+            await this._sendDataByIEEE(mac, formattedPayload, "/set");
+
+            if (i < ieeeList.length - 1 && delayMs > 0) {
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+            }
+        }
+
+        console.log(`✓ [Group Send] Завершено!`);
+        console.groupEnd();
+    }
+
 }
 
 window.customCards = window.customCards || [];
