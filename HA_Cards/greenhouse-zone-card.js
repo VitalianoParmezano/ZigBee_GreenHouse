@@ -13,10 +13,10 @@ function modeEntity(zone) {
     return `select.zone_${zone}_mode`;
 }
 function scenariosEntity(zone, channel) {
-    return `text.zone_${zone}_l${channel}_scenarios`;
+    return `text.zone_${zone}_scenarios_l${channel}`;
 }
-function offlineBrightnessEntity(zone, channel) {
-    return `number.zone_${zone}_l${channel}_offline_brightness`;
+function getGroupNameByNumber(zone, channel = 1){
+return(`Zone_${zone}_Channel_${channel}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -43,8 +43,12 @@ class GreenhouseZoneCard extends HTMLElement {
     constructor() {
         super();
         this._mqttSubscribed = false; // Замок від повторних підписок
-        this._z2mGroups = [];         // Масив для збереження даних з MQTT
-        this._unsubMqtt = null;       // Функція відписки при закритті сторінки
+        this._z2mGroups = [];          // Масив груп з zigbee2mqtt/bridge/groups
+        this._z2mDevices = [];         // Масив пристроїв з zigbee2mqtt/bridge/devices (ieee -> friendly_name)
+        this._deviceStateCache = {};   // friendly_name -> останній повний JSON стану пристрою (zigbee2mqtt/<name>)
+        this._unsubMqtt = null;        // Функції відписки при закритті сторінки
+        this._unsubMqttDevices = null;
+        this._unsubMqttStates = null;
     }
 
     setConfig(config) {
@@ -69,7 +73,7 @@ class GreenhouseZoneCard extends HTMLElement {
  set hass(hass) {
         this._hass = hass;
 
-        // Якщо ми ще не підписані, а Home Assistant вже передав робоче з'єднання:
+        // Підписка на MQTT
         if (!this._mqttSubscribed && this._hass && this._hass.connection) {
             this._mqttSubscribed = true; // Замикаємо замок
             this._subscribeToMqtt();     // Запускаємо WebSocket-запит
@@ -401,10 +405,13 @@ class GreenhouseZoneCard extends HTMLElement {
     _openZoneModal(zone) {
         //absolute = this._getGroupMembersByGroupName(`Zone_${zone}_Channel_1`);
 
-
         const hass = this._hass;
-        const modeState = hass.states[modeEntity(zone)];
-        const currentMode = modeState ? modeState.state : 'manual';
+
+        // Читаємо mode напряму з живого MQTT-кешу стану пристрою (той самий блок,
+        // що ти бачив у MQTT Explorer), а не через hass.states — це узгоджено з тим,
+        // що запис теж іде напряму в Zigbee2MQTT, минаючи HA-сутності.
+        const currentMode = this._getFieldFromZoneChannel(zone, 1, 'mode', 'manual');
+        console.log('[GreenhouseZoneCard] Відкриття зони', zone, '| поточний mode з MQTT-кешу:', currentMode);
 
         this._modalState = {
             open: true,
@@ -596,6 +603,7 @@ class GreenhouseZoneCard extends HTMLElement {
             </div>
         `;
 
+        
         // Закриття по кліку на фон або на хрестик
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) this._closeModal();
@@ -610,6 +618,14 @@ class GreenhouseZoneCard extends HTMLElement {
             if (e.key === 'Escape') this._closeModal();
         };
         document.addEventListener('keydown', this._escHandler);
+
+        const titleDiv = overlay.querySelector('.gh-modal-title');
+        titleDiv.addEventListener('click', function() {
+        console.group('Логер погнав!');
+        console.log(`Вигляд Станів:`);
+        console.log(hass.states);
+        console.groupEnd();
+        });
 
         this._renderModeRow();
         this._renderTabsRow();
@@ -656,6 +672,11 @@ class GreenhouseZoneCard extends HTMLElement {
                     option: newMode,
                 });
 
+                // Режим стосується всього пристрою, тож досить взяти членів
+                // групи БУДЬ-ЯКОГО одного каналу зони (беремо канал 1) —
+                // фізичні пристрої там ті самі, що й у групах інших каналів.
+                this._sendDataByGroupName(`Zone_${this._modalState.zone}_Channel_1`, newMode, 'mode');
+
                 this._renderModeRow();
                 this._renderModalBody();
             });
@@ -688,9 +709,8 @@ class GreenhouseZoneCard extends HTMLElement {
 
         // Оффлайн-яскравість — незалежна від режиму настройка каналу,
         // тож показується завжди, під будь-яким режимом.
-        const offlineEntity = offlineBrightnessEntity(zone, activeChannel);
-        const offlineState = hass.states[offlineEntity];
-        const offlineValue = offlineState ? offlineState.state : 50;
+        // Читається напряму з MQTT-кешу (той самий блок offline_brightness_lN).
+        const offlineValue = this._getFieldFromZoneChannel(zone, activeChannel, `offline_brightness_l${activeChannel}`, 50);
 
         html += `
             <div class="gh-section-title">Яскравість без зв'язку (Канал ${activeChannel})</div>
@@ -743,9 +763,9 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     _renderTimerSection(zone, channel) {
-        const hass = this._hass;
-        const raw = hass.states[scenariosEntity(zone, channel)];
-        const scenarios = safeParseScenarios(raw ? raw.state : null);
+        // Читається напряму з MQTT-кешу (scenarios_lN — рядок JSON, як у Z2M).
+        const rawScenarios = this._getFieldFromZoneChannel(zone, channel, `scenarios_l${channel}`, null);
+        const scenarios = safeParseScenarios(rawScenarios);
 
         let rowsHtml = '';
         for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
@@ -770,7 +790,7 @@ class GreenhouseZoneCard extends HTMLElement {
         `;
     }
 
-    _attachOfflineBrightnessListeners(zone, channel) {
+_attachOfflineBrightnessListeners(zone, channel) {
         const range = this._modalRoot.querySelector('#gh-offline-range');
         const number = this._modalRoot.querySelector('#gh-offline-number');
         if (!range || !number) return;
@@ -783,10 +803,8 @@ class GreenhouseZoneCard extends HTMLElement {
         const commit = (value) => {
             const clamped = clampPercent(value);
             sync(clamped);
-            this._hass.callService('number', 'set_value', {
-                entity_id: offlineBrightnessEntity(zone, channel),
-                value: clamped,
-            });
+            
+            this._sendDataByGroupName(getGroupNameByNumber(zone, channel), clamped, 'offline_brightness');
         };
 
         range.addEventListener('input', () => sync(range.value));
@@ -800,17 +818,47 @@ class GreenhouseZoneCard extends HTMLElement {
         const number = this._modalRoot.querySelector('#gh-manual-number');
         const entityId = lightEntity(zone, channel);
 
-        if (toggleBtn) {
-            toggleBtn.addEventListener('click', () => {
-                const willTurnOn = !toggleBtn.classList.contains('on');
-                this._hass.callService('light', willTurnOn ? 'turn_on' : 'turn_off', {
-                    entity_id: entityId,
-                });
-                toggleBtn.classList.toggle('on', willTurnOn);
-                toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
-            });
-        }
+        // if (toggleBtn) {
+        //     toggleBtn.addEventListener('click', () => {
+        //         const willTurnOn = !toggleBtn.classList.contains('on');
+        //         this._hass.callService('light', willTurnOn ? 'turn_on' : 'turn_off', {
+        //             entity_id: entityId,
+        //         });
+        //         toggleBtn.classList.toggle('on', willTurnOn);
+        //         toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
+        //     });
+        // }
+            if (toggleBtn) {
+                toggleBtn.addEventListener('click', () => {
+                    const willTurnOn = !toggleBtn.classList.contains('on');
+                    const stateValue = willTurnOn ? 'ON' : 'OFF';
+                    
+                    // Надсилаємо команду прямо в Zigbee2MQTT
+                    this._sendDataByGroupName(getGroupNameByNumber(zone, channel), stateValue, 'state');
 
+                    toggleBtn.classList.toggle('on', willTurnOn);
+                    toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
+                });
+            }
+
+        // if (range && number) {
+        //     const sync = (value) => {
+        //         range.value = value;
+        //         number.value = value;
+        //     };
+        //     const commit = (value) => {
+        //         const clamped = clampPercent(value);
+        //         sync(clamped);
+        //         this._hass.callService('light', 'turn_on', {
+        //             entity_id: entityId,
+        //             brightness_pct: clamped,
+        //         });
+        //     };
+
+        //     range.addEventListener('input', () => sync(range.value));
+        //     range.addEventListener('change', () => commit(range.value));
+        //     number.addEventListener('change', () => commit(number.value));
+        // }
         if (range && number) {
             const sync = (value) => {
                 range.value = value;
@@ -819,10 +867,9 @@ class GreenhouseZoneCard extends HTMLElement {
             const commit = (value) => {
                 const clamped = clampPercent(value);
                 sync(clamped);
-                this._hass.callService('light', 'turn_on', {
-                    entity_id: entityId,
-                    brightness_pct: clamped,
-                });
+                
+                // Відправляємо яскравість напряму в Zigbee2MQTT минаючи HA
+                this._sendDataByGroupName(getGroupNameByNumber(zone, channel), clamped, 'brightness');
             };
 
             range.addEventListener('input', () => sync(range.value));
@@ -864,7 +911,7 @@ class GreenhouseZoneCard extends HTMLElement {
             }, 1500);
         
             this._sendDataByGroupName(`Zone_${zone}_Channel_${channel}`, JSON.stringify(scenarios), `scenarios`)
-        
+
         });
     }
 
@@ -899,7 +946,7 @@ class GreenhouseZoneCard extends HTMLElement {
 
     // --- МЕТОД ПІДПИСКИ НА MQTT ЧЕРЕЗ WEBSOCKET ---
     async _subscribeToMqtt() {
-        console.log("🚀 [MQTT Direct] Спроба підписки на zigbee2mqtt/bridge/groups...");
+        console.log("Спроба підписки на zigbee2mqtt/bridge/groups...");
         try {
             this._unsubMqtt = await this._hass.connection.subscribeMessage(
                 (message) => {
@@ -917,11 +964,103 @@ class GreenhouseZoneCard extends HTMLElement {
                     topic: 'zigbee2mqtt/bridge/groups'
                 }
             );
-            console.log("✓ [MQTT Direct] Підписку успішно оформлено!");
+            console.log("✓ [MQTT Direct] Підписку на bridge/groups успішно оформлено!");
         } catch (err) {
-            console.error("❌ [MQTT Direct] Помилка підписки (перевір права користувача):", err);
+            console.error("❌ [MQTT Direct] Помилка підписки на bridge/groups:", err);
             this._mqttSubscribed = false; // Відкриваємо замок, щоб спробувати ще раз при наступному оновленні
         }
+
+        // --- bridge/devices: потрібен для мапінгу ieee_address -> friendly_name ---
+        console.log("Спроба підписки на zigbee2mqtt/bridge/devices...");
+        try {
+            this._unsubMqttDevices = await this._hass.connection.subscribeMessage(
+                (message) => {
+                    try {
+                        this._z2mDevices = JSON.parse(message.payload);
+                        console.log("[Greenhouse] bridge/devices оновлено, кількість:", this._z2mDevices.length);
+                    } catch (e) {
+                        console.error("[Greenhouse] Помилка парсингу bridge/devices:", e);
+                    }
+                },
+                {
+                    type: 'mqtt/subscribe',
+                    topic: 'zigbee2mqtt/bridge/devices'
+                }
+            );
+            console.log("✓ [MQTT Direct] Підписку на bridge/devices успішно оформлено!");
+        } catch (err) {
+            console.error("❌ [MQTT Direct] Помилка підписки на bridge/devices:", err);
+        }
+
+        // --- zigbee2mqtt/+ : живий кеш ПОВНОГО стану кожного пристрою одним JSON ---
+        // Це той самий блок { boot_status, mode, offline_brightness_l1, scenarios_l1, ... },
+        // який ти бачиш у MQTT Explorer на топіку zigbee2mqtt/<friendly_name>.
+        console.log("Спроба підписки на zigbee2mqtt/+ (стан усіх пристроїв)...");
+        try {
+            this._unsubMqttStates = await this._hass.connection.subscribeMessage(
+                (message) => {
+                    const prefix = 'zigbee2mqtt/';
+                    if (!message.topic.startsWith(prefix)) return;
+
+                    const rest = message.topic.slice(prefix.length);
+                    // Пропускаємо службові підтопіки: bridge/..., .../availability, .../set, .../get тощо —
+                    // нас цікавить ЛИШЕ топік виду "zigbee2mqtt/<friendly_name>" без додаткового "/"
+                    if (rest.includes('/')) return;
+
+                    try {
+                        this._deviceStateCache[rest] = JSON.parse(message.payload);
+                    } catch {
+                        // Не кожен топік з цим префіксом обов'язково JSON — ігноруємо мовчки
+                    }
+                },
+                {
+                    type: 'mqtt/subscribe',
+                    topic: 'zigbee2mqtt/+'
+                }
+            );
+            console.log("Підписку на zigbee2mqtt/+ успішно оформлено!");
+        } catch (err) {
+            console.error("Помилка підписки на zigbee2mqtt/+:", err);
+        }
+    }
+
+    // Повертає масив friendly_name реальних пристроїв — членів групи
+    _getGroupMemberFriendlyNames(groupName) {
+        const ieeeList = this._getGroupMembersByGroupName(groupName);
+        if (!Array.isArray(this._z2mDevices) || this._z2mDevices.length === 0) {
+            console.warn('[Greenhouse] bridge/devices ще не завантажено — friendly_name недоступні.');
+            return [];
+        }
+
+        return ieeeList
+            .map((ieee) => {
+                const dev = this._z2mDevices.find((d) => d.ieee_address === ieee);
+                if (!dev) {
+                    console.warn(`[Greenhouse] Пристрій з ieee_address ${ieee} не знайдено в bridge/devices.`);
+                    return null;
+                }
+                return dev.friendly_name;
+            })
+            .filter(Boolean);
+    }
+
+    // Дістає конкретне поле (напр. "offline_brightness_l1") з живого MQTT-кешу
+    // стану РЕАЛЬНОГО пристрою — члена групи каналу. Бере перший знайдений
+    // не-null результат серед членів групи (зазвичай член один).
+    _getFieldFromZoneChannel(zone, channel, field, fallback) {
+        const groupName = `Zone_${zone}_Channel_${channel}`;
+        const names = this._getGroupMemberFriendlyNames(groupName);
+
+        for (const name of names) {
+            const state = this._deviceStateCache[name];
+            if (state && state[field] !== undefined && state[field] !== null) {
+                console.log(`[Greenhouse] Прочитано ${field} = ${state[field]} з пристрою "${name}"`);
+                return state[field];
+            }
+        }
+
+        console.log(`[Greenhouse] Поле "${field}" не знайдено в кеші жодного члена групи "${groupName}", використано fallback:`, fallback);
+        return fallback;
     }
 
     // --- 4. ОЧИЩЕННЯ ПРИ ВИДАЛЕННІ КАРТКИ З ЕКРАНА ---
@@ -929,9 +1068,18 @@ class GreenhouseZoneCard extends HTMLElement {
         if (this._unsubMqtt) {
             this._unsubMqtt();
             this._unsubMqtt = null;
-            this._mqttSubscribed = false;
         }
+        if (this._unsubMqttDevices) {
+            this._unsubMqttDevices();
+            this._unsubMqttDevices = null;
+        }
+        if (this._unsubMqttStates) {
+            this._unsubMqttStates();
+            this._unsubMqttStates = null;
+        }
+        this._mqttSubscribed = false;
     }
+
 
     handleMqttResponse(payloadString) {
     try {
@@ -1003,12 +1151,16 @@ class GreenhouseZoneCard extends HTMLElement {
         const channel = channelMatch ? Number(channelMatch[1]) : 1;
 
         console.group(`🚀 [Group Send] Група: "${groupName}" | Тип: [${type}] | Канал: l${channel}`);
-        
-        const formattedPayload = {
-            [`${type}_l${channel}`]: payload
-        };
 
-        //const result = JSON.stringify(formattedPayload);
+        // ВАЖЛИВО: mode (і будь-які інші майбутні системні поля типу boot_status,
+        // device_time) НЕ мають суфікса каналу — це властивості всього пристрою (EP2),
+        // а не конкретного каналу. offline_brightness/scenarios — навпаки, завжди per-channel.
+        const DEVICE_LEVEL_TYPES = ['mode', 'boot_status', 'device_time'];
+        const payloadKey = DEVICE_LEVEL_TYPES.includes(type) ? type : `${type}_l${channel}`;
+
+        const formattedPayload = {
+            [payloadKey]: payload
+        };
 
         console.log(formattedPayload);
 
