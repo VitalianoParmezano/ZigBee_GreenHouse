@@ -80,11 +80,11 @@ class AutoGrouper {
 
         console.log(`🌿 [AutoGrouper] Interview successful for: ${data.device.ieeeAddr}. Запускаю фоновий процес...`);
 
-        this.setupGroupsInBackground(data.device).catch((err) => {
+        this.setupDevicesInBackground(data.device).catch((err) => {
             
             console.error(`🌿 [AutoGrouper] ❌ Помилка у фоновому процесі: ${err.message}`);
         });
-        console.log(`🌿 [AutoGrouper] Фоновий процес запущено, головний потік вільний для інших задач.`);
+        console.log(`🌿 [AutoGrouper] Процес налаштування пристрою ${data.device} запущено.`);
     }
 
     // Перевірка bootMode
@@ -97,23 +97,16 @@ class AutoGrouper {
         const newBootStatus = data.to?.boot_status;
         const oldBootStatus = data.from?.boot_status;
         
-
-        // console.log(`\n Пристрій: ${data.entity.name}`);
-        // console.log(`\n Старий стан (from):`, JSON.stringify(data.from, null, 2));
-        // console.log(`\n Новий стан (to):   `, JSON.stringify(data.to, null, 2));
-        // console.log(`\n Що змінилося (update):`, JSON.stringify(data.update, null, 2));
-        
         const basicEndpoint = data.entity.zh.getEndpoint(1);
         const result = await basicEndpoint.read('genBasic', ['productLabel']);
         
-        console.log(`\n product label is:`, JSON.stringify(result,null, 2));
-
         if (data.update && data.update.boot_status === 0) {
-            console.log(`\n🌿 Отримано свіжий пакет: boot_status = 0 для ${data.entity.name}!`);
+            console.log(`\n🌿 Отримано boot_status = 0 від ${data.entity.name}!`);
             
-            this.setupGroupsInBackground(data.entity).catch((err) => {
+            this.setupDevicesInBackground(data.entity).catch((err) => {
                 console.error(`🌿 [AutoGrouper] Device configuration failure (via update): ${err.message}`);
             });
+
             
             return; 
         }
@@ -121,10 +114,9 @@ class AutoGrouper {
     }
 
     // Вся логіка з MQTT винесена в окремий фоновий метод
-    async setupGroupsInBackground(device) {
-        console.log(`\n🌿 [AutoGrouper-BG] Фоновий процес для ${device.ieeeAddr} почався...`);
+async setupDevicesInBackground(device) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
-        console.log(`\n🌿 [AutoGrouper-BG] === Початок налаштування груп ===`);
+        console.log(`\n🌿 [AutoGrouper-BG] === Налаштування груп ===`);
 
         const basicEndpoint = device.zh.getEndpoint(1);
         let myLabel;
@@ -134,7 +126,6 @@ class AutoGrouper {
                 console.log(`🌿 [AutoGrouper-BG] Зчитування productLabel...`);
                 const result = await basicEndpoint.read('genBasic', ['productLabel']);
                 myLabel = result?.productLabel;
-                console.log(`🌿 [AutoGrouper-BG] Отримано DIP-значення: "${myLabel}"`);
             } catch (error) {
                 console.error(`🌿 [AutoGrouper-BG] Помилка читання: ${error.message}`);
             }
@@ -143,6 +134,12 @@ class AutoGrouper {
         if (!myLabel || isNaN(Number(myLabel))) return;
 
         const deviceFriendlyName = device.name;
+
+        // ---------------------------------------------------------------
+        // синхронізація системних метаданих пристрою (EP2) перед роботою з каналами.
+        // відновлюється режим (mode), час (device_time) та виставляється boot_status = 1.
+        // ---------------------------------------------------------------
+        await this.syncNewMemberFromDeviceState(device);
 
         for (let i = 1; i <= NUMBER_OF_CHANNELS; i++) {
             const group_ID = Number(myLabel) * 10 + i;
@@ -160,9 +157,9 @@ class AutoGrouper {
             const groupAlreadyExisted = await this.ensureGroupExists(groupName, group_ID);
 
             // ---------------------------------------------------------------
-            // додавання ендпоінту цього пристрою до групи
+            // додавання ендпоінту цього пристрою до групи.
             // ---------------------------------------------------------------
-            console.log(`🌿 [AutoGrouper-BG] Ін'єкція bridge/request/group/members/add...`);
+            console.log(`🌿 [AutoGrouper-BG] Додавання пристроя ${deviceFriendlyName} до групи ${groupName}, ендпоінт: ${endpointID}`);
             this.eventBus.emitMQTTMessage({
                 topic: 'zigbee2mqtt/bridge/request/group/members/add',
                 message: JSON.stringify({
@@ -175,7 +172,7 @@ class AutoGrouper {
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
             // ---------------------------------------------------------------
-            // якщо група вже існувала — синхронізуємо нового члена
+            // якщо група вже існувала — синхронізується новий член
             // з останнім відомим станом ГРУПИ (не якогось довільного пристрою).
             // ---------------------------------------------------------------
             if (groupAlreadyExisted) {
@@ -186,19 +183,71 @@ class AutoGrouper {
 
             console.log(`🌿 [AutoGrouper-BG] Канал ${channelName} успішно налаштовано.`);
         }
-        // Встановлення бут статусу в 1
+        // Встановлення boot_status в 1        
         const systemEndpoint = device.zh.getEndpoint(2);
         if (systemEndpoint) {
             try {
-                console.log(`🌿 [AutoGrouper-BG] Запис boot_status = 1 в EP2...`);
+                console.log(`🌿 [AutoGrouper-BG] Запис boot_status = 1 в пристрій ${device.ieeeAddr}`);
                 await systemEndpoint.write(0xFF01, { 0x0000: { value: 1, type: 0x20 } });
-                console.log(`🌿 [AutoGrouper-BG] ✅ boot_status = 1 успішно встановлено!`);
+                console.log(`🌿 [AutoGrouper-BG] boot_status = 1 успішно встановлено!`);
             } catch (err) {
-                console.error(`🌿 [AutoGrouper-BG] ❌ Помилка запису boot_status: ${err.message}`);
+                console.error(`🌿 [AutoGrouper-BG] Помилка запису boot_status: ${err.message}`);
             }
         }
     }
 
+
+/**
+     * Синхронізує системні налаштування пристрою в цілому (Ендпоінт 2).
+     * Відновлює або встановлює режим роботи (mode), поточний час та статус завантаження.
+     * @param {Object} device - Об'єкт пристрою з zigbee-herdsman
+     */
+    async syncNewMemberFromDeviceState(device) {
+        const SYSTEM_CLUSTER = 0xFF01;
+        const MODE_MAP_REVERSE = { manual: 0, timer: 1, auto: 2 };
+
+        // 1. Отримуємо 2-й ендпоінт, де живуть системні атрибути (mode, boot_status, device_time)
+        const metadataEndpoint = device.zh.getEndpoint(2);
+        if (!metadataEndpoint) {
+            console.warn(`🌿 [AutoGrouper-BG] ❌ Не вдалось отримати EP2 (System) для пристрою ${device.ieeeAddr}.`);
+            return;
+        }
+
+        // Читаємо останній відомий стан самого пристрою з кешу Z2M (state.json)
+        const lastKnownState = this.state.get(device) || {};
+        console.log(`🌿 [AutoGrouper-BG] Останні відомі системні дані пристрою ${device.ieeeAddr}:`, JSON.stringify(lastKnownState));
+
+        // Визначаємо цільовий режим: беремо збережений з кешу АБО ставимо 'manual' за замовчуванням для нових плат
+        const targetModeStr = lastKnownState.mode || 'manual';
+        const targetModeNum = MODE_MAP_REVERSE[targetModeStr] ?? 2; // 2 = auto
+
+        console.log(`🌿 [AutoGrouper-BG] Синхронізація плати "${device.name}" -> Режим: "${targetModeStr}" (${targetModeNum})...`);
+
+        try {
+            // ---  Синхронізація режиму роботи (Атрибут 1) ---
+            await metadataEndpoint.write(SYSTEM_CLUSTER, {
+                1: { value: targetModeNum, type: 0x20 } // 0x20 = uint8
+            });
+            console.log(`🌿 [AutoGrouper-BG] ✓ Режим "${targetModeStr}" успішно записано в пристрій ${device.ieeeAddr}.`);
+
+            // ---  Синхронізація часу (Атрибут 2) ---
+            // Оскільки ми вже синхронізуємо EP2, обов'язково передаємо актуальний час сервера (в хвилинах від півночі)
+            // const now = new Date();
+            // const currentMinutes = now.getHours() * 60 + now.getMinutes();
+            // await metadataEndpoint.write(SYSTEM_CLUSTER, {
+            //     2: { value: currentMinutes, type: 0x21 } // 0x21 = uint16
+            // });
+            // console.log(`🌿 [AutoGrouper-BG] Час синхронізовано: ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')} (${currentMinutes} хв).`);
+
+            // ---  Скидання статусу завантаження (Атрибут 0) ---
+            // Кажемо мікроконтролеру, що він успішно налаштований (boot_status = 1)
+
+            console.log(`🌿 [AutoGrouper-BG] Синхронізація метаданних для "${device.name}" завершена успішно!`);
+
+        } catch (error) {
+            console.error(`🌿 [AutoGrouper-BG] Помилка запису в системний ендпоінт EP2: ${error.message}`);
+        }
+    }
     /**
      * Синхронізує щойно доданого члена групи з останнім відомим станом ГРУПИ.
      *
@@ -219,12 +268,12 @@ class AutoGrouper {
         }
 
         const groupObject = groupEntity.group ?? groupEntity;
+
         const lastKnownState = this.state.get(groupObject);
 
         if (!lastKnownState || Object.keys(lastKnownState).length === 0) {
             console.log(
-                `🌿 [AutoGrouper-BG] Немає відомого стану групи "${groupName}" ` +
-                `(ймовірно, керування йшло через окремі пристрої, а не через топік групи) — синхронізація пропущена.`,
+                `🌿 [AutoGrouper-BG] Немає відомого стану групи "${groupName}" — синхронізація пропущена.`,
             );
             return;
         }
@@ -257,7 +306,7 @@ class AutoGrouper {
                 }
             }
 
-            // --- Кастомні атрибути каналу ---
+ // --- Кастомні атрибути каналу ---
             if (typeof lastKnownState.offline_brightness === 'number') {
                 await targetEndpoint.write(CHANNEL_CLUSTER, {
                     0: {value: lastKnownState.offline_brightness, type: 0x20},
@@ -274,9 +323,10 @@ class AutoGrouper {
                 });
             }
 
-            console.log(`🌿 [AutoGrouper-BG] ✅ Синхронізація каналу EP${endpointID} завершена успішно!`);
+
+            console.log(`🌿 [AutoGrouper-BG] Синхронізація каналу на EP${endpointID} завершена успішно!`);
         } catch (error) {
-            console.error(`🌿 [AutoGrouper-BG] ❌ Помилка запису в ендпоінт при синхронізації: ${error.message}`);
+            console.error(`🌿 [AutoGrouper-BG] Помилка запису в ендпоінт при синхронізації: ${error.message}`);
         }
     }
 
@@ -303,7 +353,7 @@ async ensureGroupExists(groupName, group_ID) {
         // =========================================================================
         // Якщо групи немає — створюємо її через MQTT
         // =========================================================================
-        console.log(`🌿 [AutoGrouper-BG] Групу не знайдено. Ін'єкція bridge/request/group/add для "${groupName}"...`);
+        console.log(`🌿 [AutoGrouper-BG] Групу не знайдено. Створення "${groupName}"...`);
 
         const responsePromise = this.waitForBridgeResponse(
             'zigbee2mqtt/bridge/response/group/add',
@@ -325,12 +375,12 @@ async ensureGroupExists(groupName, group_ID) {
         const response = await responsePromise;
 
         if (response?.status === 'ok') {
-            console.log(`🌿 [AutoGrouper-BG] ✅ Групу "${groupName}" створено вперше.`);
+            console.log(`🌿 [AutoGrouper-BG] Групу "${groupName}" створено вперше.`);
             return false;
         }
 
         // Страховка на випадок колізії, якщо група була створена кимось паралельно
-        console.log(`🌿 [AutoGrouper-BG] ⚠️ Відповідь бриджа: ${response?.status ?? 'timeout'}. Продовжую роботу як з наявною.`);
+        console.log(`🌿 [AutoGrouper-BG] Відповідь бриджа: ${response?.status ?? 'timeout'}.`);
         return true;
     }
 
@@ -368,4 +418,4 @@ async ensureGroupExists(groupName, group_ID) {
     }
 }
 
-module.exports = AutoGrouper;
+module.exports = AutoGrouper;   
