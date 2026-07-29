@@ -27,6 +27,7 @@ const CHANNEL_CLUSTER = 0xFC01; // Кастомний кластер offline_bri
 const MAX_SCENARIOS = 12;
 const BYTES_PER_SCENARIO = 3;
 
+const now = new Date();
 // Ті самі функції пакування, що і в external converter — тримати їх синхронізованими,
 // або перенести в спільний модуль, якщо логіка почне розростатись.
 function timeToMinutes(timeStr) {
@@ -197,7 +198,7 @@ async setupDevicesInBackground(device) {
     }
 
 
-/**
+    /**
      * Синхронізує системні налаштування пристрою в цілому (Ендпоінт 2).
      * Відновлює або встановлює режим роботи (mode), поточний час та статус завантаження.
      * @param {Object} device - Об'єкт пристрою з zigbee-herdsman
@@ -230,14 +231,23 @@ async setupDevicesInBackground(device) {
             });
             console.log(`🌿 [AutoGrouper-BG] ✓ Режим "${targetModeStr}" успішно записано в пристрій ${device.ieeeAddr}.`);
 
-            // ---  Синхронізація часу (Атрибут 2) ---
-            // Оскільки ми вже синхронізуємо EP2, обов'язково передаємо актуальний час сервера (в хвилинах від півночі)
-            // const now = new Date();
-            // const currentMinutes = now.getHours() * 60 + now.getMinutes();
-            // await metadataEndpoint.write(SYSTEM_CLUSTER, {
-            //     2: { value: currentMinutes, type: 0x21 } // 0x21 = uint16
+            // Синхронізація часу
+            // const localAsUtcSeconds = Date.UTC(
+            //     now.getFullYear(), now.getMonth(), now.getDate(),
+            //     now.getHours(), now.getMinutes(), now.getSeconds(),
+            // ) / 1000;
+            // const zigbeeTime = Math.floor(localAsUtcSeconds) - ZIGBEE_EPOCH_OFFSET;
+
+            // // Записуємо в атрибут 0 з типом 0xE2 (UTCTime)
+            // await metadataEndpoint.write('genTime', {
+            //     0: { value: zigbeeTime, type: 0xE2 }
             // });
-            // console.log(`🌿 [AutoGrouper-BG] Час синхронізовано: ${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')} (${currentMinutes} хв).`);
+            
+            //Покищо так, роботу з часом зробить конвертер
+            this.eventBus.emitMQTTMessage({
+                topic: `zigbee2mqtt/${device.ieeeAddr}/set`,
+                message: JSON.stringify({ device_time: 0 }),
+            });
 
             // ---  Скидання статусу завантаження (Атрибут 0) ---
             // Кажемо мікроконтролеру, що він успішно налаштований (boot_status = 1)
