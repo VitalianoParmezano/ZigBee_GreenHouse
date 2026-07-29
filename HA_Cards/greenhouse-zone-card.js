@@ -1044,22 +1044,39 @@ _attachOfflineBrightnessListeners(zone, channel) {
             .filter(Boolean);
     }
 
-    // Дістає конкретне поле (напр. "offline_brightness_l1") з живого MQTT-кешу
-    // стану РЕАЛЬНОГО пристрою — члена групи каналу. Бере перший знайдений
-    // не-null результат серед членів групи (зазвичай член один).
+    // Дістає конкретне поле з живого MQTT-кешу за 3-рівневим пріоритетом:
+    // 1. Кеш самої ГРУПИ (для спільних команд, як-от scenarios, offline_brightness).
+    // 2. Кеш конкретних ПРИСТРОЇВ-членів (для системних команд, як-от mode).
+    // 3. Fallback-значення за замовчуванням.
     _getFieldFromZoneChannel(zone, channel, field, fallback) {
         const groupName = `Zone_${zone}_Channel_${channel}`;
-        const names = this._getGroupMemberFriendlyNames(groupName);
 
+        // --- Перевіряємо кеш самої групи ---
+        const groupState = this._deviceStateCache[groupName];
+        if (groupState) {
+            // У кеші групи поля (scenarios, offline_brightness) зазвичай лежать БЕЗ суфікса каналу (_l1, _l2).
+            // Тому прибираємо суфікс _lX за допомогою регулярки, але про всяк випадок перевіряємо обидва варіанти:
+            const cleanField = field.replace(/_l\d+$/i, '');
+            const groupVal = groupState[field] ?? groupState[cleanField];
+
+            if (groupVal !== undefined && groupVal !== null) {
+                console.log(`[Greenhouse] ✓ Прочитано "${cleanField}" =`, groupVal, `з кешу ГРУПИ "${groupName}"`);
+                return groupVal;
+            }
+        }
+
+        // --- Якщо в групі немає, перевіряємо індивідуальні пристрої-члени ---
+        const names = this._getGroupMemberFriendlyNames(groupName);
         for (const name of names) {
             const state = this._deviceStateCache[name];
             if (state && state[field] !== undefined && state[field] !== null) {
-                console.log(`[Greenhouse] Прочитано ${field} = ${state[field]} з пристрою "${name}"`);
+                console.log(`[Greenhouse] ✓ Прочитано "${field}" =`, state[field], `з пристрою "${name}"`);
                 return state[field];
             }
         }
 
-        console.log(`[Greenhouse] Поле "${field}" не знайдено в кеші жодного члена групи "${groupName}", використано fallback:`, fallback);
+        // --- Fallback ---
+        console.log(`[Greenhouse] ⚠️ Поле "${field}" не знайдено ні в групі "${groupName}", ні в пристроях. Fallback:`, fallback);
         return fallback;
     }
 
@@ -1095,7 +1112,7 @@ _attachOfflineBrightnessListeners(zone, channel) {
     }
     }
         
-    /**
+        /**
      *  Метод для відправки даних на пристрій за його IEEE-адресою
      * @param {string} ieeeAddress - MAC-адреса плати (напр. "0x4831b7fffecf3772")
      * @param {Object} payload - Об'єкт з даними для відправки (напр. { brightness_l1: 100 })
@@ -1112,10 +1129,10 @@ _attachOfflineBrightnessListeners(zone, channel) {
             return;
         }
 
-        // 1. Формуємо повний MQTT-топік (наприклад: "zigbee2mqtt/0x4831b7fffecf3772/set")
+        // Формуємо повний MQTT-топік (наприклад: "zigbee2mqtt/0x4831b7fffecf3772/set")
         const fullTopic = `zigbee2mqtt/${ieeeAddress}${topicSuffix}`;
 
-        // 2. Якщо payload передано як об'єкт — перетворюємо на JSON-рядок
+        // Якщо payload передано як об'єкт — перетворюємо на JSON-рядок
         const payloadString = typeof payload === 'object' ? JSON.stringify(payload) : String(payload);
 
         console.log(`📡 [MQTT Publish] -> Топік: "${fullTopic}" | Пейлоад:`, payloadString);
@@ -1132,6 +1149,57 @@ _attachOfflineBrightnessListeners(zone, channel) {
         }
     }
 
+/**
+     * Експериментальний метод для прямої відправки даних у топік групи Z2M.
+     * Оминає ітерацію по пристроях і змушує Z2M записати стан у кеш групи (state.json).
+     * @param {string} groupName - Назва групи (напр. "Zone_1_Channel_2")
+     * @param {any} payload - Значення для відправки
+     * @param {string} type - Тип: 'scenarios', 'offline_brightness', 'mode', 'state', 'brightness' або 'raw'
+     */
+    async _testSendingDirectlyToGroup(groupName, payload, type = 'raw') {
+        if (!this._hass) {
+            console.error('❌ [Greenhouse] Неможливо відправити в групу: this._hass не ініціалізовано!');
+            return false;
+        }
+
+        if (!groupName) {
+            console.error('❌ [Greenhouse] Назва групи не вказана!');
+            return false;
+        }
+
+        const fullTopic = `zigbee2mqtt/${groupName}/set`;
+        console.group(`🧪 [Direct Group Send] -> Група: "${groupName}" | Тип: [${type}]`);
+
+        let formattedPayload;
+
+        if (type === 'raw') {
+            // Якщо передали готовий об'єкт (напр. { state: 'ON', brightness: 100 })
+            formattedPayload = typeof payload === 'object' ? payload : { raw: payload };
+        } else {
+            // ВАЖЛИВО: Для групи ми НІКОЛИ не додаємо суфікс каналу (_l1, _l2 тощо)!
+            // Конвертер Z2M чекає чисті ключі: "scenarios", "offline_brightness", "mode"
+            formattedPayload = {
+                [type]: payload
+            };
+        }
+
+        const payloadString = JSON.stringify(formattedPayload);
+        console.log(`📡 Топік: "${fullTopic}" | Пейлоад:`, payloadString);
+
+        try {
+            await this._hass.callService('mqtt', 'publish', {
+                topic: fullTopic,
+                payload: payloadString
+            });
+            console.log(`✓ [Direct Group Send] Успішно відправлено в топік групи "${groupName}"!`);
+            console.groupEnd();
+            return true;
+        } catch (error) {
+            console.error(`❌ [Direct Group Send] Помилка відправки в групу "${groupName}":`, error);
+            console.groupEnd();
+            return false;
+        }
+    }
     /**
      * Диспетчер відправки даних на групу
      * @param {string} groupName - Назва групи (напр. "Zone_1_Channel_1")
@@ -1140,6 +1208,12 @@ _attachOfflineBrightnessListeners(zone, channel) {
      * @param {number} delayMs - Затримка між відправками (мс)
      */
     async _sendDataByGroupName(groupName, payload, type = 'raw', delayMs = 250) {
+
+        if (type == 'scenarios' || type == 'offline_brightness' || type == 'brightness' || type == 'state'){
+            this._testSendingDirectlyToGroup(groupName, payload, type)
+            return;
+        }
+
         const ieeeList = this._getGroupMembersByGroupName(groupName);
 
         if (!ieeeList || ieeeList.length === 0) {
@@ -1178,6 +1252,7 @@ _attachOfflineBrightnessListeners(zone, channel) {
         console.log(`✓ [Group Send] Завершено!`);
         console.groupEnd();
     }
+
 
 }
 
