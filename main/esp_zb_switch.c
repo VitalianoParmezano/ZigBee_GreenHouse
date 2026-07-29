@@ -52,7 +52,6 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
                 ESP_LOGI(TAG, "✅ Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
                 send_boot_status_report(0);
-                timer_init(); // Ініціалізуємо таймер для синхронізації часу з координатором
                 
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
@@ -77,33 +76,27 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
 {
     esp_err_t ret = ESP_OK;
 
-    if (callback_id == ESP_ZB_CORE_CMD_READ_ATTR_RESP_CB_ID){
-        esp_zb_zcl_cmd_read_attr_resp_message_t *resp = (esp_zb_zcl_cmd_read_attr_resp_message_t *)message;
-        // Перевірка, чи це кластер часу (0x000A) і чи статус ESP_OK (0x00)
-        if (resp->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_TIME) {
-            if (resp->info.status != ESP_OK) {
-                ESP_LOGE(TAG, "Помилка при отримані часу. Код ZCL: 0x%02X", resp->info.status);
-                return ESP_OK;
-            }
-            esp_zb_zcl_read_attr_resp_variable_t *variable = resp->variables;
-            while (variable) {
-                if (variable->attribute.id == ESP_ZB_ZCL_ATTR_TIME_TIME_ID) {
-                    uint32_t zigbee_time = *(uint32_t *)variable->attribute.data.value;  
-                    timer_set_from_Zigbee_to_Unix(zigbee_time); // Виклик функції для встановлення системного часу
-                }
-                
-                variable = variable->next;
-            }
-        }
-    }
-
     if (callback_id == ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID) {
         esp_zb_zcl_set_attr_value_message_t *attr_msg = (esp_zb_zcl_set_attr_value_message_t *)message;
         
         ESP_LOGI(TAG, "Зміна атрибута на ЕП %d, кластер 0x%x, атрибут ID 0x%x", 
                  attr_msg->info.dst_endpoint, attr_msg->info.cluster, attr_msg->attribute.id);
 
+        
         // ==========================================
+        // ОБРОБКА ЧАСУ (Cluster 0x000A)
+        // ==========================================
+        if (attr_msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_TIME) {
+            if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_TIME_TIME_ID) {
+                // Зчитуємо 32-бітне значення Zigbee-часу (секунди з 2000 року)
+                uint32_t zigbee_time = *(uint32_t *)attr_msg->attribute.data.value;
+                
+                ESP_LOGI(TAG, "Отримано команду встановлення часу (/set). Zigbee Epoch: %lu", zigbee_time);
+                
+                // Передаємо значення у твою функцію для синхронізації системного годинника
+                timer_set_time(zigbee_time);
+            }
+        }        // ==========================================
         // ОБРОБКА ЯСКРАВОСТІ (Cluster 0x0008)
         // ==========================================
         if (attr_msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
@@ -127,7 +120,9 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 case 0x0000: { // Бут статус
                     uint8_t new_boot_status = *(uint8_t *)attr_msg->attribute.data.value;
                     ESP_LOGI(TAG, "Бут статус змінено на: %d", new_boot_status);
-                    // TODO: значення записується у NVS пам'ять
+                    if (new_boot_status == 1){
+                    }
+                    send_boot_status_report(*(uint8_t *)attr_msg->attribute.data.value);
                     break;
                 }
 
@@ -135,12 +130,6 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     uint8_t new_mode = *(uint8_t *)attr_msg->attribute.data.value;
                     ESP_LOGI(TAG, "Режим роботи встановлено: %d", new_mode);
                     // TODO: значення записується у NVS пам'ять
-                    break;
-                }
-
-                case 0x0002: { // Поточний час доби (хвилини від півночі, 0-1439)
-                    uint16_t new_time = *(uint16_t *)attr_msg->attribute.data.value;
-                    ESP_LOGI(TAG, "Поточний час пристрою оновлено: %d хв", new_time);
                     break;
                 }
 
@@ -249,9 +238,7 @@ static void zigbee_task(void *arg) {
     }
 }
 
-// Функція обов'язково має приймати (uint8_t param) для сумісності з будильником!
 void send_boot_status_report(uint8_t status_value) {
-    status_value = 0;
     esp_zb_lock_acquire(portMAX_DELAY);
 
     esp_err_t err = esp_zb_zcl_set_attribute_val(
@@ -295,6 +282,7 @@ void send_boot_status_report(uint8_t status_value) {
         ESP_LOGE("BOOT_SYNC", "Помилка відправки радіопакета: %s", esp_err_to_name(err));
     }
 }
+
 // ==========================================
 // ТОЧКА ВХОДУ В ПРОГРАМУ (MAIN)
 // ==========================================
@@ -311,7 +299,9 @@ void app_main(void) {
     dip_switch_init(); // Ініціалізуємо GPIO для Діп свіча
     light_driver_init(); // Ініціалізуємо драйвер світла
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
-    modbus_init();
+    modbus_init(); // Так само з модбасом
+    timer_init(); // Ініціалізуємо таймер для синхронізації часу з координатором
+
 
     ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS

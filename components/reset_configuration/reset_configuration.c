@@ -55,7 +55,7 @@ static void button_single_click_cb(void *arg, void *usr_data)
         // Викликаємо очищення локальної пам'яті Zigbee (SDK саме перезавантажить плату)
         esp_zb_factory_reset(); 
     } else {
-        uint32_t a = get_current_unix_time();
+        uint32_t a = get_current_time();
         printf("Current time: %lu \n", a);
         //send_boot_status_report(1);
 

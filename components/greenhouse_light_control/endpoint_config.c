@@ -113,21 +113,21 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         custom_cluster, 
         0x0001, 
         ESP_ZB_ZCL_ATTR_TYPE_U8, 
-        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE, 
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, 
         &current_mode
     );
+
+    // Додавання наповненого кастомного кластера до списку кластерів другого ендпоінта
+    esp_zb_cluster_list_add_custom_cluster(cluster_list_second, custom_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     // Кластер часу
     esp_zb_time_cluster_cfg_t time_cfg = {
         .time = 0, // Ініціалізація часу (може бути оновлена пізніше)
         .time_status = 0, // Статус часу (може бути оновлений пізніше)
     };
-
-    esp_zb_time_cluster_create(&time_cfg);
     // Додавання кластеру часу до списку кластерів другого ендпоінта
     esp_zb_cluster_list_add_time_cluster(cluster_list_second, esp_zb_time_cluster_create(&time_cfg), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
-    // Додавання наповненого кастомного кластера до списку кластерів другого ендпоінта
-    esp_zb_cluster_list_add_custom_cluster(cluster_list_second, custom_cluster, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
 
     /*
      * Реєстрація другого ендпоінта у загальному списку пристрою.
