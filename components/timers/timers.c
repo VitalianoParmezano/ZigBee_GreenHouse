@@ -11,18 +11,16 @@
 static const char *TAG = "TIMER";
 bool time_sync_initialized = false;
 
+uint8_t timer_seconds_to_syncronization = 0; // Лічильник секунд до синхронізації часу, потрібно для того щоб усі пристрої тікали таймером одночасно
+
 void timer_set_time(uint32_t zigbee_time) {
-    // Системний час встановлюється на основі отриманого значення
     struct timeval tv = {
         .tv_sec = (time_t)zigbee_time,
         .tv_usec = 0
     };
     settimeofday(&tv, NULL);
     
-    // М'ютекс захоплюється для безпечного доступу до пам'яті
     esp_zb_lock_acquire(portMAX_DELAY);
-    
-    // Значення записується в локальний атрибут кластера
     esp_err_t err = esp_zb_zcl_set_attribute_val(
         2,
         ESP_ZB_ZCL_CLUSTER_ID_TIME,
@@ -31,13 +29,14 @@ void timer_set_time(uint32_t zigbee_time) {
         &zigbee_time,
         false
     );
-    
-    // М'ютекс звільняється
     esp_zb_lock_release();
 
-    // Результат операції виводиться в консоль
+    uint8_t seconds_into_minute = zigbee_time % 60;
+    timer_seconds_to_syncronization = (60 - seconds_into_minute) % 60;
+
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Час синхронізовано: %lu", zigbee_time);
+        ESP_LOGI(TAG, "Час синхронізовано: %lu (чекаю %u сек до межі хвилини)", 
+                 zigbee_time, timer_seconds_to_syncronization);
     } else {
         ESP_LOGE(TAG, "Помилка запису: %s", esp_err_to_name(err));
     }
@@ -56,6 +55,9 @@ void time_sync_task(void *arg) {
 
     while (1) {
         // Поточний час зчитується з годинника мікроконтролера
+        vTaskDelay(pdMS_TO_TICKS(timer_seconds_to_syncronization*1000)); // Затримка на 1 секунду для точності
+        timer_seconds_to_syncronization = 0;
+
         time_t now;
         time(&now);
 

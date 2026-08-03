@@ -83,15 +83,10 @@ static void handle_attr_changed(const state_machine_event_t *evt)
                     case 0x0001:
                         // Довжина масиву розкладу читається з нульового байта
                         ESP_LOGI(TAG, "EP%d: timer_data довжина = %d", evt->endpoint, evt->data.octet_string[0]);
-                        g_state.channel_timer_data[evt->endpoint - 11][0] = evt->data.octet_string[0]; // Зберігаємо довжину розкладу у глобальному стані
+                        g_state.channel_timer_data[evt->endpoint - 11][0] = evt->data.octet_string[0]; // Збереження довжини розкладу у глобальному стані
                         for (int i = 0; i < evt->data.octet_string[0]; i++) {
-                            g_state.channel_timer_data[evt->endpoint - 11][1 + i] = evt->data.octet_string[1 + i]; // Зберігаємо решту байтів розкладу у глобальному стані
+                            g_state.channel_timer_data[evt->endpoint - 11][1 + i] = evt->data.octet_string[1 + i]; // Збереження решти байтів розкладу у глобальному стані
                         }
-                        printf("Канал %d мітки: ", g_state.channel_timer_data[evt->endpoint - 11][0]);
-                        for(int i = 1; i <= g_state.channel_timer_data[evt->endpoint - 11][0]; i++) {
-                            printf("%d ", g_state.channel_timer_data[evt->endpoint - 11][i]);
-                        }
-                        printf("\n");
                         break;
                     default:
                         ESP_LOGW(TAG, "Отримано невідомий атрибут кластера каналу: 0x%04x", evt->attr_id);
@@ -114,7 +109,9 @@ static void handle_attr_changed(const state_machine_event_t *evt)
                 led_strip_set_level(evt->endpoint, evt->data.u8_data);
             }
             break;
-
+        case 0x000a:
+            /* таймер */
+            break;
         default:
             /* Подія для невідомого кластера ігнорується з попередженням */
             ESP_LOGW(TAG, "ATTR_CHANGED для невідомого кластера: EP%d, кластер 0x%04x", evt->endpoint, evt->cluster_id);
@@ -127,6 +124,7 @@ void handle_minute_tick(void)
     ESP_LOGI(TAG, "MINUTE_TICK");
     
     if (g_state.current_mode != 1) { 
+        ESP_LOGI(TAG, "Поточний режим не дозволяє застосовувати розклад. Поточний режим: %d", g_state.current_mode);
         return; 
     }
     
@@ -178,11 +176,49 @@ void handle_minute_tick(void)
         }
         
         // Застосовуємо розклад до фізичного світу
-        if (found_valid_mark) {
-            ESP_LOGI(TAG, "EP%d: Поточний час %d хв. Найближча минула мітка: %d хв. Встановлюю яскравість %d%%", 
-                     endpoint, current_time, best_mark_time, best_brightness);
-                     
+            if (found_valid_mark) {
+
+            
+            esp_zb_lock_acquire(portMAX_DELAY);
+            
+            esp_err_t err = esp_zb_zcl_set_attribute_val(
+                endpoint,                                       // 
+                ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,            // 
+                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+                ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID, // 
+                &best_brightness,
+                false
+            );
+
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Помилка запису яскравості атрибут: %s", esp_err_to_name(err));
+            }
+
+            esp_zb_zcl_report_attr_cmd_t report_cmd = {
+                .zcl_basic_cmd = {
+                    .dst_addr_u.addr_short = 0x0000, 
+                    .dst_endpoint = 1,               
+                    .src_endpoint = endpoint,        
+                },
+                .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+                .clusterID = ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+                .attributeID = ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
+                .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+                .dis_default_resp = 0,
+                .manuf_specific = 0,
+                .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC
+            };
+            
+            err = esp_zb_zcl_report_attr_cmd_req(&report_cmd);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "Помилка відправки репорту: %s", esp_err_to_name(err));
+            }
+
+            
+            esp_zb_lock_release();
+
             led_strip_set_level(endpoint, best_brightness);
+
             // modbus_send_brightness_to_channel(best_brightness * 10, channel);
         } else {
             ESP_LOGW(TAG, "EP%d: Не знайдено коректних часових міток у розкладі", endpoint);
