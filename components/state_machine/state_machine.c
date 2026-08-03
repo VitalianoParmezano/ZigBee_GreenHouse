@@ -26,6 +26,8 @@ static void handle_minute_tick(void);
 static void handle_zigbee_online(void);
 static void handle_zigbee_offline(void);
 
+// ОБЕРЕЖНО, тут лютєйший хардкод
+// Коли до контроллера прийшла зміна атрибуту тут обробка
 static void handle_attr_changed(const state_machine_event_t *evt)
 {
     ESP_LOGI(TAG, "ATTR_CHANGED: EP%d, кластер 0x%04x, атрибут 0x%04x",
@@ -95,7 +97,7 @@ static void handle_attr_changed(const state_machine_event_t *evt)
 static void handle_minute_tick(void)
 {
     // TODO: інкремент локального лічильника хвилин, перевірка розкладу
-    ESP_LOGD(TAG, "MINUTE_TICK");
+    ESP_LOGI(TAG, "MINUTE_TICK");
 }
 
 static void handle_zigbee_online(void)

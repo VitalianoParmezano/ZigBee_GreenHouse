@@ -6,6 +6,7 @@
 #include "sys/time.h"
 #include "esp_log.h"
 #include "esp_zigbee_core.h"
+#include "state_machine.h"
 
 static const char *TAG = "TIMER";
 bool time_sync_initialized = false;
@@ -73,9 +74,20 @@ void time_sync_task(void *arg) {
                 false
             );
             esp_zb_lock_release();
+
+            //Надсилання стейт машині події про оновлення часу
+            state_machine_event_t event = {
+                .type = EVENT_MINUTE_TICK,
+                .endpoint = 2,
+                .cluster_id = ESP_ZB_ZCL_CLUSTER_ID_TIME,
+                .attr_id = ESP_ZB_ZCL_ATTR_TIME_TIME_ID,
+                .data.u8_data = 0 // Значення не використовується для цієї події
+            };
+            state_machine_post_event(&event);
         }
         
         // Задача призупиняється на 60 секунд
+        printf("\n DEBUG, таймер спить\n");
         vTaskDelay(pdMS_TO_TICKS(60000));
     }
 }
