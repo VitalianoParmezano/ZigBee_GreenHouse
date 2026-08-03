@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include "state_machine.h"
+#include "light_driver.h"
+#include "timers.h"
 
 void func(void)
 {
@@ -17,12 +19,27 @@ static const char *TAG = "STATE_MACHINE";
 
 static QueueHandle_t s_queue = NULL;
 
+// Початковий стан
+global_state_t g_state = {
+    .current_mode = 0xff, // 0 - Manual (ручний режим за замовчуванням)
+    
+    .channel_timer_data = {
+        {36, 0}, // Канал 1
+        {36, 0}, // Канал 2
+        {36, 0}  // Канал 3
+    },
+
+    .channel_offline_brightness = {50, 50, 50}
+};
+
+
+
 // ---------------------------------------------------------------------
 // Обробники за типом події — по одній функції на кожен випадок.
 // Тут лише прототипи + заглушки; фактичну логіку кожен наповнює сам.
 // ---------------------------------------------------------------------
 static void handle_attr_changed(const state_machine_event_t *evt);
-static void handle_minute_tick(void);
+//static void handle_minute_tick(void);
 static void handle_zigbee_online(void);
 static void handle_zigbee_offline(void);
 
@@ -46,6 +63,7 @@ static void handle_attr_changed(const state_machine_event_t *evt)
                     case 0x0001:
                         // Поточний режим роботи фіксується
                         ESP_LOGI(TAG, "current_mode = %d", evt->data.u8_data);
+                        g_state.current_mode = evt->data.u8_data; // Зберігаємо поточний режим у глобальному стані
                         break;
                     default:
                         ESP_LOGW(TAG, "Отримано невідомий атрибут системного кластера: 0x%04x", evt->attr_id);
@@ -65,6 +83,15 @@ static void handle_attr_changed(const state_machine_event_t *evt)
                     case 0x0001:
                         // Довжина масиву розкладу читається з нульового байта
                         ESP_LOGI(TAG, "EP%d: timer_data довжина = %d", evt->endpoint, evt->data.octet_string[0]);
+                        g_state.channel_timer_data[evt->endpoint - 11][0] = evt->data.octet_string[0]; // Зберігаємо довжину розкладу у глобальному стані
+                        for (int i = 0; i < evt->data.octet_string[0]; i++) {
+                            g_state.channel_timer_data[evt->endpoint - 11][1 + i] = evt->data.octet_string[1 + i]; // Зберігаємо решту байтів розкладу у глобальному стані
+                        }
+                        printf("Канал %d мітки: ", g_state.channel_timer_data[evt->endpoint - 11][0]);
+                        for(int i = 1; i <= g_state.channel_timer_data[evt->endpoint - 11][0]; i++) {
+                            printf("%d ", g_state.channel_timer_data[evt->endpoint - 11][i]);
+                        }
+                        printf("\n");
                         break;
                     default:
                         ESP_LOGW(TAG, "Отримано невідомий атрибут кластера каналу: 0x%04x", evt->attr_id);
@@ -84,6 +111,7 @@ static void handle_attr_changed(const state_machine_event_t *evt)
             /* Реєструється зміна цільового рівня яскравості (Level Control) */
             if (evt->endpoint > 2) {
                 ESP_LOGI(TAG, "EP%d: Змінено атрибут Level Control кластера, attr_id = 0x%04x", evt->endpoint, evt->attr_id);
+                led_strip_set_level(evt->endpoint, evt->data.u8_data);
             }
             break;
 
@@ -94,10 +122,72 @@ static void handle_attr_changed(const state_machine_event_t *evt)
     }
 }
 
-static void handle_minute_tick(void)
+void handle_minute_tick(void)
 {
-    // TODO: інкремент локального лічильника хвилин, перевірка розкладу
     ESP_LOGI(TAG, "MINUTE_TICK");
+    
+    if (g_state.current_mode != 1) { 
+        return; 
+    }
+    
+    uint16_t current_time = timer_get_current_time_in_minutes(); // 0 - 1439
+
+    // channel йде від 0 до 2
+    for (int channel = 0; channel < NUMBER_OF_CHANNEL_ENDPOINTS; channel++) {
+        
+        // Зворотна конвертація індексу в ендпоінт (0->11, 1->12, 2->13)
+        uint8_t endpoint = channel + 11;
+        
+        uint8_t *timer_data = g_state.channel_timer_data[channel];
+        uint8_t payload_length = timer_data[0]; 
+        
+        // Якщо розклад порожній (менше 3 байтів на одну мітку) - пропускаємо
+        if (payload_length < 3) {
+            continue;
+        }
+        
+        uint16_t min_diff = 0xFFFF;
+        uint16_t best_mark_time = 0;
+        uint8_t best_brightness = 0;
+        bool found_valid_mark = false;
+
+        /*
+         * Парсинг масиву (структура: [High Byte][Low Byte][Brightness])
+         */
+        for (int i = 1; i <= payload_length - 2; i += 3) {
+            
+            // Збираємо 16-бітний час (Little-Endian: спочатку молодший байт, потім старший)
+            uint16_t mark_time = timer_data[i] | (timer_data[i + 1] << 8);
+            uint8_t brightness = timer_data[i + 2];
+            
+            // Захист від битих міток
+            if (mark_time >= 1440) {
+                continue; 
+            }
+
+            // Математика кільцевого часу (перехід через добу)
+            uint16_t diff = (current_time - mark_time + 1440) % 1440;
+            
+            // Шукаємо найближчу мітку
+            if (diff < min_diff) {
+                min_diff = diff;
+                best_mark_time = mark_time;
+                best_brightness = brightness;
+                found_valid_mark = true;
+            }
+        }
+        
+        // Застосовуємо розклад до фізичного світу
+        if (found_valid_mark) {
+            ESP_LOGI(TAG, "EP%d: Поточний час %d хв. Найближча минула мітка: %d хв. Встановлюю яскравість %d%%", 
+                     endpoint, current_time, best_mark_time, best_brightness);
+                     
+            led_strip_set_level(endpoint, best_brightness);
+            // modbus_send_brightness_to_channel(best_brightness * 10, channel);
+        } else {
+            ESP_LOGW(TAG, "EP%d: Не знайдено коректних часових міток у розкладі", endpoint);
+        }
+    }
 }
 
 static void handle_zigbee_online(void)

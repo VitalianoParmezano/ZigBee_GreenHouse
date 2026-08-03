@@ -1,3 +1,4 @@
+#pragma once
 #include "esp_zigbee_core.h"
 #include "esp_log.h"
 

@@ -11,6 +11,8 @@
 #include "endpoint_config.h"
 #include "stdint.h"
 
+#include "state_machine.h"
+
 #include "timers.h"
 
 //#include "esp_zb_switch.h"
@@ -58,6 +60,7 @@ static void button_single_click_cb(void *arg, void *usr_data)
         uint32_t a = get_current_time();
         printf("Current time: %lu \n", a);
         //send_boot_status_report(1);
+        handle_minute_tick();
 
         ESP_LOGI(TAG, "Пристрій працює у звичайному режимі (скидання не активовано).");
     }

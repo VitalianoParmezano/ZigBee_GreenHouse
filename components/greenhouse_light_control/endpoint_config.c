@@ -210,23 +210,23 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     }
 }
 
-void request_time_from_coordinator(void) {
-   	ESP_LOGI(TAG, "Requesting time from coordinator...");
+// void request_time_from_coordinator(void) {
+//    	ESP_LOGI(TAG, "Requesting time from coordinator...");
 
-    uint16_t attributes[] = 
-    {
-        ESP_ZB_ZCL_ATTR_TIME_TIME_ID
-    };
-     esp_zb_zcl_read_attr_cmd_t read_req;
-    read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-    read_req.attr_field = attributes;
-    read_req.attr_number = sizeof(attributes) / sizeof(uint16_t);
-    read_req.clusterID = ESP_ZB_ZCL_CLUSTER_ID_TIME;
-    read_req.zcl_basic_cmd.dst_endpoint = 1;
-    read_req.zcl_basic_cmd.src_endpoint = 2;
-    read_req.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000;  //coordinator
-    esp_zb_zcl_read_attr_cmd_req(&read_req);
-}
+//     uint16_t attributes[] = 
+//     {
+//         ESP_ZB_ZCL_ATTR_TIME_TIME_ID
+//     };
+//      esp_zb_zcl_read_attr_cmd_t read_req;
+//     read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
+//     read_req.attr_field = attributes;
+//     read_req.attr_number = sizeof(attributes) / sizeof(uint16_t);
+//     read_req.clusterID = ESP_ZB_ZCL_CLUSTER_ID_TIME;
+//     read_req.zcl_basic_cmd.dst_endpoint = 1;
+//     read_req.zcl_basic_cmd.src_endpoint = 2;
+//     read_req.zcl_basic_cmd.dst_addr_u.addr_short = 0x0000;  //coordinator
+//     esp_zb_zcl_read_attr_cmd_req(&read_req);
+// }
 
 // перетворює uint8_t у Zigbee Pascal-рядок
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer) 

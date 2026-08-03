@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "endpoint_config.h" // Для NUMBER_OF_CHANNEL_ENDPOINTS
 
 typedef enum {
     EVENT_ZIGBEE_ONLINE,
@@ -27,11 +28,20 @@ typedef struct {
     } data;
 } state_machine_event_t;
 
+typedef struct {
+
+    uint8_t current_mode; // Офлайн-яскравість для кожного каналу (0-100)
+    uint8_t channel_timer_data[NUMBER_OF_CHANNEL_ENDPOINTS][3 * 12 + 1]; // 3 байти на 1 запис, 12 часових міток на канал, +1 байт для довжини масиву розкладу
+    uint8_t channel_offline_brightness[NUMBER_OF_CHANNEL_ENDPOINTS]; //
+
+}global_state_t;
+
 void state_machine_init(void);
+
 
 // Відправка — безпечна для виклику з задачі Zigbee-стека.
 bool state_machine_post_event(const state_machine_event_t *event);
 
 
-
+void handle_minute_tick(void);
 #endif // STATE_MACHINE_H
