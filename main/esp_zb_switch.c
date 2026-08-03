@@ -11,6 +11,8 @@
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
 
+#include "state_machine.h"
+
 #include "time.h"
 #include "sys/time.h"
 #include "timers.h"
@@ -82,7 +84,12 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         ESP_LOGI(TAG, "Зміна атрибута на ЕП %d, кластер 0x%x, атрибут ID 0x%x", 
                  attr_msg->info.dst_endpoint, attr_msg->info.cluster, attr_msg->attribute.id);
 
-        
+        state_machine_event_t state_machine_event = {
+            .type = EVENT_ATTR_CHANGED,
+            .endpoint = attr_msg->info.dst_endpoint,
+            .cluster_id = attr_msg->info.cluster,
+            .attr_id = attr_msg->attribute.id,
+        };
         // ==========================================
         // ОБРОБКА ЧАСУ (Cluster 0x000A)
         // ==========================================
@@ -102,13 +109,15 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
         if (attr_msg->info.cluster == ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL) {
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
+
                 led_strip_set_level(attr_msg->info.dst_endpoint, level);
                 
                 // Використання номера ендпоінту як каналу для Modbus
                 int channel = attr_msg->info.dst_endpoint % 10; 
                 
                 // Запис яскравості у Modbus (для зовнішнього контролю)
-                modbus_send_brightness_to_channel(level * 10, channel); 
+                //modbus_send_brightness_to_channel(level * 10, channel); 
+                state_machine_event.data.u8_data = level; // Зберігаємо значення яскравості у події для стейт-машини
             }
         }
             // ==========================================
@@ -123,13 +132,14 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     if (new_boot_status == 1){
                     }
                     send_boot_status_report(*(uint8_t *)attr_msg->attribute.data.value);
+                    state_machine_event.data.u8_data = new_boot_status; // Зберігаємо значення бут-статусу у події для стейт-машини
                     break;
                 }
 
                 case 0x0001: { // Режим роботи
                     uint8_t new_mode = *(uint8_t *)attr_msg->attribute.data.value;
                     ESP_LOGI(TAG, "Режим роботи встановлено: %d", new_mode);
-                    // TODO: значення записується у NVS пам'ять
+                    state_machine_event.data.u8_data = new_mode; // Зберігаємо значення режиму у події для стейт-машини
                     break;
                 }
 
@@ -153,38 +163,26 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     ESP_LOGI(TAG, "Канал %d: встановлено офлайн-яскравість %d%%",
                              channel_index + 1, new_offline_bright);
                     // TODO: значення записується у NVS для відповідного каналу
+                    state_machine_event.data.u8_data = new_offline_bright; // Зберігаємо значення офлайн-яскравості у події для стейт-машини
                     break;
                 }
 
                 case 0x0001: { // Розклад каналу (Octet String)
                     uint8_t *payload = (uint8_t *)attr_msg->attribute.data.value;
                     uint8_t payload_length = payload[0];
-                    printf("Канал %d: Сирий розклад: ", channel_index + 1);
+                    printf("Канал %d: Сирий розклад: \n", channel_index + 1);
                     for (int i = 0; i < payload_length; i++) {
                         printf("%d ", payload[1 + i]);
                     }
                     printf("\n");
-                    /*
-                     * Довжина обмежується фактичним розміром отриманого буфера,
-                     * щоб пошкоджений або укорочений пакет не спричиняв
-                     * читання за межами виділеної пам'яті.
-                     */
-                    uint8_t available = (uint8_t)(attr_msg->attribute.data.size - 1);
-                    if (payload_length > available) {
-                        payload_length = available;
-                    }
 
-                    time_mark_t *schedule = (time_mark_t *)&payload[1];
-                    uint8_t marks_count = payload_length / sizeof(time_mark_t);
-                    
-                    ESP_LOGI(TAG, "Канал %d: отримано розклад, %d міток",
-                             channel_index + 1, marks_count);
-
-                    for (int m = 0; m < marks_count; m++) {
-                        ESP_LOGI(TAG, "  Мітка %d -> хвилина: %d, яскравість: %d%%",
-                                 m, schedule[m].minute, schedule[m].brightness);
+                    state_machine_event.data.octet_string[0] = payload_length; // Зберігаємо довжину розкладу у події для стейт-машини
+                    state_machine_event.data.octet_string[1] = payload[1]; // Зберігаємо перший байт розкладу у події для стейт-машини
+                    for (int i = 1; i < payload_length; i++) {
+                        state_machine_event.data.octet_string[1 + i] = payload[1 + i]; // Зберігаємо решту байтів розкладу у події для стейт-машини
                     }
-                    // TODO: значення записується у NVS для відповідного каналу
+                
+
                     break;
                 }
 
@@ -193,6 +191,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                     break;
             }
         }
+
+        state_machine_post_event(&state_machine_event);
     } else {
         ESP_LOGD(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
     }
@@ -302,6 +302,7 @@ void app_main(void) {
     modbus_init(); // Так само з модбасом
     timer_init(); // Ініціалізуємо таймер для синхронізації часу з координатором
 
+    state_machine_init(); // Ініціалізація стейт-машини 
 
     ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
