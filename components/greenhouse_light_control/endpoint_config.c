@@ -52,7 +52,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     // (Це автоматично додасть ZCL Version та Power Source)
     esp_zb_attribute_list_t *basic_attr_list = esp_zb_basic_cluster_create(&basic_cfg);
 
-    //  Додаю кастомні атрибути до списку базового кластеру
+    //  Додаю атрибути до списку базового кластеру
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, model_id);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, manufacturer_name);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);

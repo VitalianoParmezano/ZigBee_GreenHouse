@@ -110,10 +110,9 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
 
-                led_strip_set_level(attr_msg->info.dst_endpoint, level);
+                //led_strip_set_level(attr_msg->info.dst_endpoint, level);
                 
-                // Використання номера ендпоінту як каналу для Modbus
-                int channel = attr_msg->info.dst_endpoint % 10; 
+                //int channel = attr_msg->info.dst_endpoint % 10; 
                 
                 // Запис яскравості у Modbus (для зовнішнього контролю)
                 //modbus_send_brightness_to_channel(level * 10, channel); 

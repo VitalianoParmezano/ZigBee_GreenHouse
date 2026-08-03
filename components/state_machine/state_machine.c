@@ -31,17 +31,65 @@ static void handle_attr_changed(const state_machine_event_t *evt)
     ESP_LOGI(TAG, "ATTR_CHANGED: EP%d, кластер 0x%04x, атрибут 0x%04x",
              evt->endpoint, evt->cluster_id, evt->attr_id);
 
-    if (evt->cluster_id == 0xFC01 && evt->attr_id == 0x0001)
-    {
-        printf("Отримано новий розклад для каналу %d: ", evt->endpoint - 10);
-        printf("Сирий розклад: ");
-        for (int i = 0; i < evt->data.octet_string[0]; i++) {
-            printf("%d ", evt->data.octet_string[1 + i]);
-        }
-        printf("\n");
+    switch (evt->cluster_id) {
+        
+        case 0xFF01:
+            /* Обробляються системні метадані (закріплені за ендпоінтом 2) */
+            if (evt->endpoint == 2) {
+                switch (evt->attr_id) {
+                    case 0x0000:
+                        // Статус завантаження виводиться у лог
+                        ESP_LOGI(TAG, "boot_status = %d", evt->data.u8_data);
+                        break;
+                    case 0x0001:
+                        // Поточний режим роботи фіксується
+                        ESP_LOGI(TAG, "current_mode = %d", evt->data.u8_data);
+                        break;
+                    default:
+                        ESP_LOGW(TAG, "Отримано невідомий атрибут системного кластера: 0x%04x", evt->attr_id);
+                        break;
+                }
+            }
+            break;
+
+        case 0xFC01:
+            /* Обробляються кастомні параметри освітлення (ендпоінти каналів) */
+            if (evt->endpoint > 2) {
+                switch (evt->attr_id) {
+                    case 0x0000:
+                        // Значення яскравості для офлайн-режиму виводиться у лог
+                        ESP_LOGI(TAG, "EP%d: offline_brightness = %d", evt->endpoint, evt->data.u8_data);
+                        break;
+                    case 0x0001:
+                        // Довжина масиву розкладу читається з нульового байта
+                        ESP_LOGI(TAG, "EP%d: timer_data довжина = %d", evt->endpoint, evt->data.octet_string[0]);
+                        break;
+                    default:
+                        ESP_LOGW(TAG, "Отримано невідомий атрибут кластера каналу: 0x%04x", evt->attr_id);
+                        break;
+                }
+            }
+            break;
+
+        case 0x0006:
+            /* Реєструється зміна стану увімкнення/вимкнення (On/Off) */
+            if (evt->endpoint > 2) {
+                ESP_LOGI(TAG, "EP%d: Змінено атрибут On/Off кластера, attr_id = 0x%04x", evt->endpoint, evt->attr_id);
+            }
+            break;
+
+        case 0x0008:
+            /* Реєструється зміна цільового рівня яскравості (Level Control) */
+            if (evt->endpoint > 2) {
+                ESP_LOGI(TAG, "EP%d: Змінено атрибут Level Control кластера, attr_id = 0x%04x", evt->endpoint, evt->attr_id);
+            }
+            break;
+
+        default:
+            /* Подія для невідомого кластера ігнорується з попередженням */
+            ESP_LOGW(TAG, "ATTR_CHANGED для невідомого кластера: EP%d, кластер 0x%04x", evt->endpoint, evt->cluster_id);
+            break;
     }
-    
-    printf("Значення отримане в чергу: %d\n", evt->data.u8_data);
 }
 
 static void handle_minute_tick(void)
