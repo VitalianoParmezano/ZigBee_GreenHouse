@@ -11,6 +11,8 @@
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
 
+#include "nvs_storage.h"
+
 #include "state_machine.h"
 
 #include "time.h"
@@ -287,13 +289,18 @@ void send_boot_status_report(uint8_t status_value) {
 // ==========================================
 void app_main(void) {
     // Ініціалізація енергонезалежної пам'яті (NVS).
-    esp_err_t ret = nvs_flash_init();
+    //esp_err_t ret = nvs_flash_init();
     
-    // Якщо пам'ять пошкоджена, заповнена або має стару структуру
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase()); // Повністю стираємо її
-        ESP_ERROR_CHECK(nvs_flash_init());  // І ініціалізуємо заново
-    }
+    esp_err_t err = nvs_storage_init(); // Ініціалізація NVS для збереження офлайн-яскравості каналів
+
+    printf("\nNVS ініціалізація завершена з кодом: %s\n", esp_err_to_name(err));
+
+
+    // // Якщо пам'ять пошкоджена, заповнена або має стару структуру
+    // if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    //     ESP_ERROR_CHECK(nvs_flash_erase()); // Повністю стираємо її
+    //     ESP_ERROR_CHECK(nvs_flash_init());  // І ініціалізуємо заново
+    // }
 
     dip_switch_init(); // Ініціалізуємо GPIO для Діп свіча
     light_driver_init(); // Ініціалізуємо драйвер світла
@@ -302,6 +309,7 @@ void app_main(void) {
     timer_init(); // Ініціалізуємо таймер для синхронізації часу з координатором
 
     state_machine_init(); // Ініціалізація стейт-машини 
+
 
     ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
