@@ -1,4 +1,4 @@
-// ---------------------------------------------------------------------------
+/// ---------------------------------------------------------------------------
 // Мапінг зон/каналів на entity_id у Home Assistant.
 // ПІДПРАВ ЦІ ФУНКЦІЇ, якщо реальні entity_id у твоїй інсталяції відрізняються
 // (звір у Developer Tools -> States після пейрингу пристроїв).
@@ -308,7 +308,6 @@ class GreenhouseZoneCard extends HTMLElement {
             text-align: right;
         }
 
-        .gh-scenario-row input[type="time"],
         .gh-scenario-row input[type="number"] {
             padding: 6px 8px;
             border-radius: 8px;
@@ -317,6 +316,45 @@ class GreenhouseZoneCard extends HTMLElement {
             color: var(--primary-text-color);
             width: 100%;
             box-sizing: border-box;
+        }
+
+        .gh-time-input {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            padding: 4px 6px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.06);
+            box-sizing: border-box;
+        }
+
+        .gh-time-part {
+            width: 28px;
+            padding: 4px 0;
+            border: none;
+            background: transparent;
+            color: var(--primary-text-color);
+            font-size: 16px;
+            font-variant-numeric: tabular-nums;
+            text-align: center;
+            box-sizing: border-box;
+        }
+        .gh-time-part:focus {
+            outline: none;
+            background: rgba(255, 255, 255, 0.12);
+            border-radius: 4px;
+        }
+        .gh-time-part::-webkit-outer-spin-button,
+        .gh-time-part::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .gh-time-sep {
+            opacity: 0.6;
+            font-size: 16px;
         }
 
         .gh-save-btn {
@@ -556,7 +594,6 @@ class GreenhouseZoneCard extends HTMLElement {
                     opacity: 0.5;
                     text-align: right;
                 }
-                .gh-scenario-row input[type="time"],
                 .gh-scenario-row input[type="number"] {
                     padding: 6px 8px;
                     border-radius: 8px;
@@ -565,6 +602,42 @@ class GreenhouseZoneCard extends HTMLElement {
                     color: var(--primary-text-color);
                     width: 100%;
                     box-sizing: border-box;
+                }
+                .gh-time-input {
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    gap: 4px;
+                    padding: 4px 6px;
+                    border-radius: 8px;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    background: rgba(255, 255, 255, 0.06);
+                    box-sizing: border-box;
+                }
+                .gh-time-part {
+                    width: 28px;
+                    padding: 4px 0;
+                    border: none;
+                    background: transparent;
+                    color: var(--primary-text-color);
+                    font-size: 16px;
+                    font-variant-numeric: tabular-nums;
+                    text-align: center;
+                    box-sizing: border-box;
+                }
+                .gh-time-part:focus {
+                    outline: none;
+                    background: rgba(255, 255, 255, 0.12);
+                    border-radius: 4px;
+                }
+                .gh-time-part::-webkit-outer-spin-button,
+                .gh-time-part::-webkit-inner-spin-button {
+                    -webkit-appearance: none;
+                    margin: 0;
+                }
+                .gh-time-sep {
+                    opacity: 0.6;
+                    font-size: 16px;
                 }
                 .gh-save-btn {
                     margin-top: 14px;
@@ -772,11 +845,19 @@ class GreenhouseZoneCard extends HTMLElement {
             const existing = scenarios[idx] || {};
             const time = existing.time || '';
             const brightness = existing.brightness !== undefined ? existing.brightness : '';
+            const [hh, mm] = time.split(':');
 
             rowsHtml += `
                 <div class="gh-scenario-row">
                     <div class="gh-scenario-index">${idx + 1}</div>
-                    <input type="time" data-slot="${idx}" class="gh-slot-time" value="${time}">
+                    <div class="gh-time-input" data-slot="${idx}">
+                        <input type="text" inputmode="numeric" maxlength="2" placeholder="ГГ"
+                               class="gh-time-part gh-time-hh" data-slot="${idx}" value="${hh || ''}">
+                        <span class="gh-time-sep">:</span>
+                        <input type="text" inputmode="numeric" maxlength="2" placeholder="ХХ"
+                               class="gh-time-part gh-time-mm" data-slot="${idx}" value="${mm || ''}">
+                        <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${time}">
+                    </div>
                     <input type="number" data-slot="${idx}" class="gh-slot-percent" min="0" max="100" placeholder="%" value="${brightness}">
                 </div>
             `;
@@ -878,7 +959,69 @@ _attachOfflineBrightnessListeners(zone, channel) {
         }
     }
 
+    // Кастомний ГГ:ХХ ввід (24-годинний формат) замість системного <input type="time">.
+    // Кожен рядок має два текстові поля (години/хвилини) + приховане поле .gh-slot-time,
+    // яке зберігає фінальне значення "HH:MM" — саме його читає _attachTimerListeners при збереженні.
+    _attachTimeInputListeners() {
+        const rows = this._modalRoot.querySelectorAll('.gh-time-input');
+
+        rows.forEach((row) => {
+            const hhInput = row.querySelector('.gh-time-hh');
+            const mmInput = row.querySelector('.gh-time-mm');
+            const hiddenInput = row.querySelector('.gh-slot-time');
+            if (!hhInput || !mmInput || !hiddenInput) return;
+
+            const syncHidden = () => {
+                const hh = hhInput.value.trim();
+                const mm = mmInput.value.trim();
+                // Час валідний лише якщо заповнені обидва поля — інакше рядок вважається порожнім
+                hiddenInput.value = (hh !== '' && mm !== '')
+                    ? `${hh.padStart(2, '0')}:${mm.padStart(2, '0')}`
+                    : '';
+            };
+
+            const clampField = (input, max) => {
+                const digitsOnly = input.value.replace(/\D/g, '').slice(0, 2);
+                let num = digitsOnly === '' ? null : Number(digitsOnly);
+                if (num !== null && num > max) num = max;
+                input.value = num === null ? '' : String(num);
+            };
+
+            hhInput.addEventListener('input', () => {
+                hhInput.value = hhInput.value.replace(/\D/g, '').slice(0, 2);
+                syncHidden();
+                // Автоперехід на хвилини, коли години введені повністю (2 цифри)
+                if (hhInput.value.length === 2) {
+                    mmInput.focus();
+                    mmInput.select();
+                }
+            });
+            hhInput.addEventListener('blur', () => {
+                clampField(hhInput, 23);
+                syncHidden();
+            });
+
+            mmInput.addEventListener('input', () => {
+                mmInput.value = mmInput.value.replace(/\D/g, '').slice(0, 2);
+                syncHidden();
+            });
+            mmInput.addEventListener('blur', () => {
+                clampField(mmInput, 59);
+                syncHidden();
+            });
+
+            // Backspace у порожньому полі хвилин повертає фокус на години
+            mmInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && mmInput.value === '') {
+                    hhInput.focus();
+                }
+            });
+        });
+    }
+
     _attachTimerListeners(zone, channel) {
+        this._attachTimeInputListeners();
+
         const saveBtn = this._modalRoot.querySelector('#gh-save-scenarios');
         if (!saveBtn) return;
 
