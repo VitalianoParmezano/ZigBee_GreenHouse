@@ -2,12 +2,7 @@
 #include "state_machine.h"
 #include "light_driver.h"
 #include "timers.h"
-
-void func(void)
-{
-
-}
-#include "state_machine.h"
+#include "nvs_storage.h"
 #include "esp_log.h"
 #include "freertos/task.h"
 
@@ -21,8 +16,8 @@ static QueueHandle_t s_queue = NULL;
 
 // Початковий стан
 global_state_t g_state = {
-    .current_mode = 0xff, // 0 - Manual (ручний режим за замовчуванням)
-    
+    .current_mode = 0xff, // Режим ще не отримано від координатора
+
     .channel_timer_data = {
         {36, 0}, // Канал 1
         {36, 0}, // Канал 2
@@ -32,16 +27,17 @@ global_state_t g_state = {
     .channel_offline_brightness = {50, 50, 50}
 };
 
-
-
 // ---------------------------------------------------------------------
 // Обробники за типом події — по одній функції на кожен випадок.
-// Тут лише прототипи + заглушки; фактичну логіку кожен наповнює сам.
 // ---------------------------------------------------------------------
 static void handle_attr_changed(const state_machine_event_t *evt);
-//static void handle_minute_tick(void);
+static void handle_mode_manual(void);
+static void handle_mode_scenarios(void);
+static void handle_mode_auto(void);      // TODO: реалізувати пізніше
+static void handle_mode_unknown(void);
 static void handle_zigbee_online(void);
 static void handle_zigbee_offline(void);
+static void apply_brightness_changes(uint8_t endpoint, uint8_t brightness);
 
 // ОБЕРЕЖНО, тут лютєйший хардкод
 // Коли до контроллера прийшла зміна атрибуту тут обробка
@@ -51,7 +47,7 @@ static void handle_attr_changed(const state_machine_event_t *evt)
              evt->endpoint, evt->cluster_id, evt->attr_id);
 
     switch (evt->cluster_id) {
-        
+
         case 0xFF01:
             /* Обробляються системні метадані (закріплені за ендпоінтом 2) */
             if (evt->endpoint == 2) {
@@ -77,8 +73,10 @@ static void handle_attr_changed(const state_machine_event_t *evt)
             if (evt->endpoint > 2) {
                 switch (evt->attr_id) {
                     case 0x0000:
-                        // Значення яскравості для офлайн-режиму виводиться у лог
+                        // Значення яскравості для офлайн-режиму зберігається у пам'яті й у NVS
                         ESP_LOGI(TAG, "EP%d: offline_brightness = %d", evt->endpoint, evt->data.u8_data);
+                        g_state.channel_offline_brightness[evt->endpoint - 11] = evt->data.u8_data;
+                        nvs_write_offline_brightness(evt->endpoint - 11, evt->data.u8_data);
                         break;
                     case 0x0001:
                         // Довжина масиву розкладу читається з нульового байта
@@ -119,31 +117,91 @@ static void handle_attr_changed(const state_machine_event_t *evt)
     }
 }
 
+/**
+ * Диспетчер щохвилинного тіку. Перевірка режиму робиться ОДИН раз тут,
+ * далі керування передається конкретному обробнику режиму.
+ */
 void handle_minute_tick(void)
 {
-    ESP_LOGI(TAG, "MINUTE_TICK");
-    
-    if (g_state.current_mode != 1) { 
-        ESP_LOGI(TAG, "Поточний режим не дозволяє застосовувати розклад. Поточний режим: %d", g_state.current_mode);
-        return; 
+    ESP_LOGI(TAG, "MINUTE_TICK, поточний режим: %d", g_state.current_mode);
+
+    switch (g_state.current_mode) {
+        case 0: // Manual
+            handle_mode_manual();
+            break;
+        case 1: // Timer / Scenarios
+            handle_mode_scenarios();
+            break;
+        case 2: // Auto
+            handle_mode_auto();
+            break;
+        case 0xFF: // Режим ще не отримано від координатора
+            handle_mode_unknown();
+            break;
+        default:
+            ESP_LOGW(TAG, "Невідомий режим: %d", g_state.current_mode);
+            break;
     }
+}
+
+/**
+ * MANUAL — розклад не застосовується, яскравість повністю контролюється
+ * зовнішньо (напряму через Level Control команди).
+ */
+static void handle_mode_manual(void)
+{
     
+    ESP_LOGI(TAG, "Ручний режим: нічого не робимо.");
+}
+
+/**
+ * NO_MODE (0xFF) — координатор ще не встиг передати реальний режим.
+ * Для кожного каналу читаємо offline_brightness з NVS (з фолбеком на
+ * значення, яке вже є в g_state, якщо в NVS нічого не збережено) і
+ * застосовуємо його як безпечний дефолт до фізичного світла.
+ */
+static void handle_mode_unknown(void)
+{
+    ESP_LOGW(TAG, "Режим роботи ще не визначено (0xFF) — застосовую offline_brightness з NVS.");
+
+    for (int channel = 0; channel < NUMBER_OF_CHANNEL_ENDPOINTS; channel++) {
+        uint8_t endpoint = channel + 11;
+
+        // read_offline_brightness сам впорається з відсутнім ключем: поверне default_value
+        uint8_t brightness = nvs_read_offline_brightness(channel, g_state.channel_offline_brightness[channel]);
+        g_state.channel_offline_brightness[channel] = brightness;
+
+        apply_brightness_changes(endpoint, brightness);
+    }
+}
+
+static void handle_mode_auto(void)
+{
+    // TODO: реалізувати пізніше
+}
+
+/**
+ * Застосовує розклад (сценарії) до фізичного світла на основі поточного часу доби.
+ * Викликається лише з режиму Timer (current_mode == 1) через диспетчер handle_minute_tick.
+ */
+static void handle_mode_scenarios(void)
+{
     uint16_t current_time = timer_get_current_time_in_minutes(); // 0 - 1439
 
     // channel йде від 0 до 2
     for (int channel = 0; channel < NUMBER_OF_CHANNEL_ENDPOINTS; channel++) {
-        
+
         // Зворотна конвертація індексу в ендпоінт (0->11, 1->12, 2->13)
         uint8_t endpoint = channel + 11;
-        
+
         uint8_t *timer_data = g_state.channel_timer_data[channel];
-        uint8_t payload_length = timer_data[0]; 
-        
+        uint8_t payload_length = timer_data[0];
+
         // Якщо розклад порожній (менше 3 байтів на одну мітку) - пропускаємо
         if (payload_length < 3) {
             continue;
         }
-        
+
         uint16_t min_diff = 0xFFFF;
         uint16_t best_mark_time = 0;
         uint8_t best_brightness = 0;
@@ -153,19 +211,19 @@ void handle_minute_tick(void)
          * Парсинг масиву (структура: [High Byte][Low Byte][Brightness])
          */
         for (int i = 1; i <= payload_length - 2; i += 3) {
-            
+
             // Збираємо 16-бітний час (Little-Endian: спочатку молодший байт, потім старший)
             uint16_t mark_time = timer_data[i] | (timer_data[i + 1] << 8);
             uint8_t brightness = timer_data[i + 2];
-            
+
             // Захист від битих міток
             if (mark_time >= 1440) {
-                continue; 
+                continue;
             }
 
             // Математика кільцевого часу (перехід через добу)
             uint16_t diff = (current_time - mark_time + 1440) % 1440;
-            
+
             // Шукаємо найближчу мітку
             if (diff < min_diff) {
                 min_diff = diff;
@@ -174,56 +232,66 @@ void handle_minute_tick(void)
                 found_valid_mark = true;
             }
         }
-        
-        // Застосовуємо розклад до фізичного світу
-            if (found_valid_mark) {
 
-            
-            esp_zb_lock_acquire(portMAX_DELAY);
-            
-            esp_err_t err = esp_zb_zcl_set_attribute_val(
-                endpoint,                                       // 
-                ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,            // 
-                ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
-                ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID, // 
-                &best_brightness,
-                false
-            );
-
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Помилка запису яскравості атрибут: %s", esp_err_to_name(err));
-            }
-
-            esp_zb_zcl_report_attr_cmd_t report_cmd = {
-                .zcl_basic_cmd = {
-                    .dst_addr_u.addr_short = 0x0000, 
-                    .dst_endpoint = 1,               
-                    .src_endpoint = endpoint,        
-                },
-                .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
-                .clusterID = ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
-                .attributeID = ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
-                .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
-                .dis_default_resp = 0,
-                .manuf_specific = 0,
-                .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC
-            };
-            
-            err = esp_zb_zcl_report_attr_cmd_req(&report_cmd);
-            if (err != ESP_OK) {
-                ESP_LOGE(TAG, "Помилка відправки репорту: %s", esp_err_to_name(err));
-            }
-
-            
-            esp_zb_lock_release();
-
-            led_strip_set_level(endpoint, best_brightness);
-
-            // modbus_send_brightness_to_channel(best_brightness * 10, channel);
+        // Застосовуємо розклад до фізичного світу (запис атрибута + репорт + фізичне світло — все в apply_brightness_changes)
+        if (found_valid_mark) {
+            apply_brightness_changes(endpoint, best_brightness);
         } else {
             ESP_LOGW(TAG, "EP%d: Не знайдено коректних часових міток у розкладі", endpoint);
         }
     }
+}
+
+/**
+ * Єдина точка застосування яскравості на конкретному ендпоінті:
+ * 1. Записує значення в ZCL-атрибут Level Control (щоб Z2M бачив актуальний стан).
+ * 2. Надсилає report-команду координатору (щоб зміна долетіла проактивно, без опитування).
+ * 3. Оновлює фізичне світло через led_strip_set_level.
+ * Викликається і з handle_mode_scenarios, і з handle_mode_unknown — тому
+ * рапортування тут одне, і дублювати його по місцях виклику більше не треба.
+ */
+static void apply_brightness_changes(uint8_t endpoint, uint8_t brightness)
+{
+    esp_zb_lock_acquire(portMAX_DELAY);
+
+    esp_err_t err = esp_zb_zcl_set_attribute_val(
+        endpoint,
+        ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
+        ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
+        &brightness,
+        false
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Помилка запису яскравості атрибут: %s", esp_err_to_name(err));
+    }
+
+    esp_zb_zcl_report_attr_cmd_t report_cmd = {
+        .zcl_basic_cmd = {
+            .dst_addr_u.addr_short = 0x0000,
+            .dst_endpoint = 1,
+            .src_endpoint = endpoint,
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .clusterID = ESP_ZB_ZCL_CLUSTER_ID_LEVEL_CONTROL,
+        .attributeID = ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID,
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .dis_default_resp = 0,
+        .manuf_specific = 0,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC
+    };
+
+    err = esp_zb_zcl_report_attr_cmd_req(&report_cmd);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Помилка відправки репорту: %s", esp_err_to_name(err));
+    }
+
+    esp_zb_lock_release();
+
+    led_strip_set_level(endpoint, brightness);
+
+    // modbus_send_brightness_to_channel(brightness * 10, endpoint - 11);
 }
 
 static void handle_zigbee_online(void)

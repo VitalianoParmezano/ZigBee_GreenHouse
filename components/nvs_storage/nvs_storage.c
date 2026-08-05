@@ -25,8 +25,15 @@ esp_err_t nvs_storage_init(void)
     return err;
 }
 
-esp_err_t write_offline_brightness(uint8_t channel, uint8_t value)
+esp_err_t nvs_write_offline_brightness(uint8_t channel, uint8_t value)
 {
+
+    uint8_t existing_value = nvs_read_offline_brightness(channel, 0);
+    if (existing_value == value) {
+        ESP_LOGI(TAG, "Значення offline_brightness для каналу %d вже встановлено на %d, пропускаю запис.", channel, value);
+        return ESP_OK;
+    }
+
     char key[16];
     snprintf(key, sizeof(key), "ch%d_offbr", channel);
 
@@ -52,7 +59,7 @@ esp_err_t write_offline_brightness(uint8_t channel, uint8_t value)
     return err;
 }
 
-uint8_t read_offline_brightness(uint8_t channel, uint8_t default_value)
+uint8_t nvs_read_offline_brightness(uint8_t channel, uint8_t default_value)
 {
     char key[16];
     snprintf(key, sizeof(key), "ch%d_offbr", channel);
