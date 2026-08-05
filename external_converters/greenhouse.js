@@ -4,8 +4,12 @@ const exposes = require('zigbee-herdsman-converters/lib/exposes');
 const e = exposes.presets;
 const ea = exposes.access;
 
-const SYSTEM_CLUSTER = 0xFF01;
+const METADATA_CLUSTER = 0xFF01;
 const CHANNEL_CLUSTER = 0xFC01;
+
+// Секунд між Unix-епохою (1970-01-01) і Zigbee-епохою (2000-01-01),
+// яку використовує тип UTCTime кластера genTime.
+const ZIGBEE_EPOCH_OFFSET = 946684800;
 
 const MODE_MAP = { 0: 'manual', 1: 'timer', 2: 'auto' };
 const MODE_MAP_REVERSE = { manual: 0, timer: 1, auto: 2 };
@@ -61,14 +65,35 @@ function encodeScenarios(scenarios) {
     return buffer;
 }
 
-// fzLocal
+// Локальний час сервера, представлений як UTC-секунди від Zigbee-епохи.
+// Прошивка пристрою не виконує окремого перерахунку часових поясів,
+// тому число на пристрої має відповідати стінному (локальному) часу —
+// так само, як розклади (scenarios) зберігаються як прості "HH:MM"
+// без прив'язки до часового поясу.
+function localDateToZigbeeTime(date) {
+    const localAsUtcSeconds = Date.UTC(
+        date.getFullYear(), date.getMonth(), date.getDate(),
+        date.getHours(), date.getMinutes(), date.getSeconds(),
+    ) / 1000;
+    return Math.floor(localAsUtcSeconds) - ZIGBEE_EPOCH_OFFSET;
+}
+
+// Обернена операція: значення атрибута Time інтерпретується як локальний
+// стінний час (не як справжній UTC), відповідно до того, як воно записувалось.
+function zigbeeTimeToLocalHHMM(zigbeeTime) {
+    const date = new Date((zigbeeTime + ZIGBEE_EPOCH_OFFSET) * 1000);
+    const h = String(date.getUTCHours()).padStart(2, '0');
+    const m = String(date.getUTCMinutes()).padStart(2, '0');
+    return `${h}:${m}`;
+}
+
 const fzLocal = {
     system: {
-        cluster: SYSTEM_CLUSTER.toString(),
+        cluster: METADATA_CLUSTER.toString(),
         type: ['attributeReport', 'readResponse'],
         convert: (model, msg, publish, options, meta) => {
             const result = {};
-            // Перевіряємо, що пакет прийшов з 2-го ендпоінта
+            // Системні параметри публікуються ендпоінтом 2.
             if (msg.endpoint.ID !== 2) return;
 
             const d = msg.data;
@@ -77,9 +102,6 @@ const fzLocal = {
 
             const modeVal = d['1'] ?? d[1];
             if (modeVal !== undefined) result.mode = MODE_MAP[modeVal] ?? 'unknown';
-
-            const timeVal = d['2'] ?? d[2];
-            if (timeVal !== undefined) result.device_time = minutesToTime(timeVal);
 
             return result;
         },
@@ -99,71 +121,85 @@ const fzLocal = {
             return result;
         },
     },
+
+    deviceTime: {
+        cluster: 'genTime',
+        type: ['attributeReport', 'readResponse'],
+        convert: (model, msg, publish, options, meta) => {
+            if (msg.data.time === undefined) return;
+            return { device_time: zigbeeTimeToLocalHHMM(msg.data.time) };
+        },
+    },
 };
 
-// tzLocal
 const tzLocal = {
     boot_status: {
         key: ['boot_status'],
-        convertSet: async(entity, key, value, meta) => {
-            const endpoint = meta.device.getEndpoint(2); // Жорстко б'ємо в EP 2
-            await endpoint.write(SYSTEM_CLUSTER, { 0: { value: Number(value), type: 0x20 } });
+        convertSet: async (entity, key, value, meta) => {
+            const endpoint = meta.device.getEndpoint(2);
+            await endpoint.write(METADATA_CLUSTER, { 0: { value: Number(value), type: 0x20 } });
             return { state: { boot_status: Number(value) } };
         },
-        convertGet: async(entity, key, meta) => {
+        convertGet: async (entity, key, meta) => {
             const endpoint = meta.device.getEndpoint(2);
-            await endpoint.read(SYSTEM_CLUSTER, [0]);
+            await endpoint.read(METADATA_CLUSTER, [0]);
         },
     },
 
     mode: {
         key: ['mode'],
-        convertSet: async(entity, key, value, meta) => {
+        convertSet: async (entity, key, value, meta) => {
             const endpoint = meta.device.getEndpoint(2);
             const numeric = typeof value === 'string' ? MODE_MAP_REVERSE[value] : value;
-            await endpoint.write(SYSTEM_CLUSTER, { 1: { value: numeric, type: 0x20 } });
+            await endpoint.write(METADATA_CLUSTER, { 1: { value: numeric, type: 0x20 } });
             return { state: { mode: MODE_MAP[numeric] } };
         },
-        convertGet: async(entity, key, meta) => {
+        convertGet: async (entity, key, meta) => {
             const endpoint = meta.device.getEndpoint(2);
-            await endpoint.read(SYSTEM_CLUSTER, [1]);
+            await endpoint.read(METADATA_CLUSTER, [1]);
         },
     },
 
     device_time: {
         key: ['device_time'],
-        convertSet: async(entity, key, value, meta) => {
+        convertSet: async (entity, key, value, meta) => {
             const endpoint = meta.device.getEndpoint(2);
-            const minutes = timeToMinutes(value);
-            await endpoint.write(SYSTEM_CLUSTER, { 2: { value: minutes, type: 0x21 } });
-            return { state: { device_time: value } };
+            const now = new Date();
+            const zigbeeTime = localDateToZigbeeTime(now);
+
+            // Тип 0xE2 відповідає UTCTime.
+            await endpoint.write('genTime', { 0: { value: zigbeeTime, type: 0xE2 } });
+
+            const h = String(now.getHours()).padStart(2, '0');
+            const m = String(now.getMinutes()).padStart(2, '0');
+            return { state: { device_time: `${h}:${m}` } };
         },
-        convertGet: async(entity, key, meta) => {
+        convertGet: async (entity, key, meta) => {
             const endpoint = meta.device.getEndpoint(2);
-            await endpoint.read(SYSTEM_CLUSTER, [2]);
+            await endpoint.read('genTime', ['time']);
         },
     },
 
     offline_brightness: {
         key: ['offline_brightness'],
-        convertSet: async(entity, key, value, meta) => {
+        convertSet: async (entity, key, value, meta) => {
             await entity.write(CHANNEL_CLUSTER, { 0: { value: Number(value), type: 0x20 } });
             return { state: { offline_brightness: Number(value) } };
         },
-        convertGet: async(entity, key, meta) => {
+        convertGet: async (entity, key, meta) => {
             await entity.read(CHANNEL_CLUSTER, [0]);
         },
     },
 
     scenarios: {
         key: ['scenarios'],
-        convertSet: async(entity, key, value, meta) => {
+        convertSet: async (entity, key, value, meta) => {
             const parsed = typeof value === 'string' ? JSON.parse(value) : value;
             const buffer = encodeScenarios(parsed);
             await entity.write(CHANNEL_CLUSTER, { 1: { value: buffer, type: 0x41 } });
             return { state: { scenarios: JSON.stringify(parsed) } };
         },
-        convertGet: async(entity, key, meta) => {
+        convertGet: async (entity, key, meta) => {
             await entity.read(CHANNEL_CLUSTER, [1]);
         },
     },
@@ -172,18 +208,18 @@ const tzLocal = {
 function channelExposes(endpointName, label) {
     return [
         exposes.presets.light_brightness()
-        .withEndpoint(endpointName)
-        .withDescription(`Світло: ${label}`),
+            .withEndpoint(endpointName)
+            .withDescription(`Світло: ${label}`),
 
         exposes.presets.numeric('offline_brightness', exposes.access.ALL)
-        .withValueMin(0)
-        .withValueMax(100)
-        .withEndpoint(endpointName)
-        .withDescription(`Яскравість "${label}" за відсутності зв'язку`),
+            .withValueMin(0)
+            .withValueMax(100)
+            .withEndpoint(endpointName)
+            .withDescription(`Яскравість "${label}" за відсутності зв'язку`),
 
         exposes.presets.text('scenarios', exposes.access.ALL)
-        .withEndpoint(endpointName)
-        .withDescription(`Часові мітки "${label}"`),
+            .withEndpoint(endpointName)
+            .withDescription(`Часові мітки "${label}"`),
     ];
 }
 
@@ -195,15 +231,14 @@ const definition = {
 
     meta: { multiEndpoint: true },
 
-    // ВИДАЛИЛИ 'system: 2' зв'язку з мульти-ендпоінтом! 
-    // Тепер мапінг стосується лише каналів l1, l2, l3:
+    // Мапінг ендпоінтів для каналів освітлення.
     endpoint: (device) => ({
         l1: 11,
         l2: 12,
         l3: 13,
     }),
 
-    fromZigbee: [fzLocal.system, fzLocal.channel, fz.on_off, fz.brightness],
+    fromZigbee: [fzLocal.system, fzLocal.channel, fzLocal.deviceTime, fz.on_off, fz.brightness],
     toZigbee: [
         tzLocal.boot_status,
         tzLocal.mode,
@@ -214,7 +249,7 @@ const definition = {
     ],
 
     exposes: [
-        // БЕЗ .withEndpoint('system') -> Z2M опублікує їх БЕЗ суфіксів!
+        // Публікується без суфікса ендпоінта.
         e.numeric('boot_status', ea.ALL)
             .withDescription('0 = потрібна синхронізація, 1 = синхронізовано')
             .withValueMax(1)
