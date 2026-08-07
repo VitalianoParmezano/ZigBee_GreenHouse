@@ -4,8 +4,7 @@
 
 ## Ключове архітектурне рішення
 
-ESP має ЛИШЕ стандартний brightness-кластер (genLevelCtrl/genOnOff) -
-жодних кастомних кластерів. Тому:
+ESP має стандартний brightness-кластер (genLevelCtrl/genOnOff), кластер бут статусу та оффлайн яскравості.
 
 - Z2M/ESP розуміють тільки `brightness`/`state` - звичайна zigbee-лампа.
 - `mode`, `scenarios`, `offline_brightness` живуть ЛИШЕ в локальній
