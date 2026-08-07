@@ -1,0 +1,18 @@
+mqtt:
+  host: localhost
+  port: 1883
+  user: ""
+  password: ""
+  base_topic: zigbee2mqtt
+
+scheduler:
+  zones: 6
+  channels_per_zone: 3
+  tick_interval_sec: 30
+  # true = сервіс тільки логує, що б відправив, нічого не публікує в /set
+  dry_run: true
+
+logging:
+  # DEBUG - показує кожен канал на кожному тіку (навіть коли нічого не
+  # змінилось) і чому саме пропущено. INFO - тільки реальні зміни.
+  level: INFO
