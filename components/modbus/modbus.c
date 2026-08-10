@@ -60,18 +60,10 @@ enum {
 const mb_parameter_descriptor_t device_parameters[] = {
     { CID_TEMP, STR("Temp"), STR("C"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0017, 1, HOLD_OFFSET(driver_temp), PARAM_TYPE_U16, 2, OPTS( 0, 120, 0 ), PAR_PERMS_READ },
     
-    { CID_BRIGHTNESS_CH1, STR("B_CH1"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0030, 1, HOLD_OFFSET(brightness_ch1), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_READ_WRITE_TRIGGER },
-    { CID_BRIGHTNESS_CH2, STR("B_CH2"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0031, 1, HOLD_OFFSET(brightness_ch2), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_READ_WRITE_TRIGGER },
-    { CID_BRIGHTNESS_CH3, STR("B_CH3"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0032, 1, HOLD_OFFSET(brightness_ch3), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_READ_WRITE_TRIGGER },
+    { CID_BRIGHTNESS_CH1, STR("B_CH1"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0030, 1, HOLD_OFFSET(brightness_ch1), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_WRITE },
+    { CID_BRIGHTNESS_CH2, STR("B_CH2"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0031, 1, HOLD_OFFSET(brightness_ch2), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_WRITE },
+    { CID_BRIGHTNESS_CH3, STR("B_CH3"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0032, 1, HOLD_OFFSET(brightness_ch3), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_WRITE },
 
-    { CID_VOLTAGE_CH1, STR("V_CH1"), STR("0.1V"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0040, 1, HOLD_OFFSET(voltage_ch1), PARAM_TYPE_U16, 2, OPTS( 0, 3000, 0 ), PAR_PERMS_READ },
-    { CID_CURRENT_CH1, STR("I_CH1"), STR("0.1mA"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0041, 1, HOLD_OFFSET(current_ch1), PARAM_TYPE_U16, 2, OPTS( 0, 6000, 0 ), PAR_PERMS_READ },
-
-    { CID_VOLTAGE_CH2, STR("V_CH2"), STR("0.1V"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0042, 1, HOLD_OFFSET(voltage_ch2), PARAM_TYPE_U16, 2, OPTS( 0, 3000, 0 ), PAR_PERMS_READ },
-    { CID_CURRENT_CH2, STR("I_CH2"), STR("0.1mA"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0043, 1, HOLD_OFFSET(current_ch2), PARAM_TYPE_U16, 2, OPTS( 0, 6000, 0 ), PAR_PERMS_READ },
-
-    { CID_VOLTAGE_CH3, STR("V_CH3"), STR("0.1V"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0044, 1, HOLD_OFFSET(voltage_ch3), PARAM_TYPE_U16, 2, OPTS( 0, 3000, 0 ), PAR_PERMS_READ },
-    { CID_CURRENT_CH3, STR("I_CH3"), STR("0.1mA"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0045, 1, HOLD_OFFSET(current_ch3), PARAM_TYPE_U16, 2, OPTS( 0, 6000, 0 ), PAR_PERMS_READ }
 };
 const uint16_t num_device_parameters = (sizeof(device_parameters) / sizeof(device_parameters[0]));
 
@@ -151,25 +143,4 @@ void modbus_send_brightness_to_channel(uint16_t brightness, uint8_t channel) {
     mbc_master_set_parameter(master_handle, cid, (uint8_t*)&brightness, &write_type); 
 
     ESP_LOGI(TAG, "Параметр CID %d відправлено через mbc_master_set_parameter", cid);
-}
-
-int modbus_read_brightness_from_channel(uint8_t channel) {
-    if (channel < 1 || channel > 3) return -1;
-    return modbus_read_holding_register(0x0030 + (channel - 1));
-}
-
-int modbus_read_voltage_from_channel(uint8_t channel) {
-    if (channel < 1 || channel > 3) return -1;
-    // Математика: CH1 = 0x0040, CH2 = 0x0042, CH3 = 0x0044
-    return modbus_read_holding_register(0x0040 + (channel - 1) * 2);
-}
-
-int modbus_read_current_from_channel(uint8_t channel) {
-    if (channel < 1 || channel > 3) return -1;
-    // Математика: CH1 = 0x0041, CH2 = 0x0043, CH3 = 0x0045
-    return modbus_read_holding_register(0x0041 + (channel - 1) * 2);
-}
-
-int modbus_read_driver_temperature(void) {
-    return modbus_read_holding_register(0x0017);
 }

@@ -6,6 +6,7 @@
 
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer);
 
+static uint8_t boot_status = 0;       // Атрибут 0x0000: Статус завантаження: по-дефолту 0, після отримання даних від сервера змінюється на 1, 2 -> сигнал heart_beat
 
 #define SHIFT 10 // Зсув для номерів ендпоінтів каналів (щоб не перетинатися з базовим ендпоінтом)
 
@@ -36,8 +37,7 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         .power_source = 0x01,
     };
 
-    //  Створюємо список атрибутів на базі конфігу 
-    // (Це автоматично додасть ZCL Version та Power Source)
+    //  Створення списку атрибутів на базі конфігу, 1 ендпоінт 
     esp_zb_attribute_list_t *basic_attr_list = esp_zb_basic_cluster_create(&basic_cfg);
 
     //  Додаю кастомні атрибути до списку бащового кластеру
@@ -46,10 +46,10 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_HW_VERSION_ID, &hw_version);
     esp_zb_basic_cluster_add_attr(basic_attr_list, ESP_ZB_ZCL_ATTR_BASIC_PRODUCT_LABEL_ID, basic_product_label);
 
-    // Створюємо список кластерів для ендпоінта
+    // Створення списку кластерів для ендпоінта
     esp_zb_cluster_list_t *cluster_list_first = esp_zb_zcl_cluster_list_create();
 
-    //  Додаємо наш ПОВНИЙ Basic Cluster (Тільки один раз!)
+    //  Додавання Basic Cluster (Тільки один раз!)
     esp_zb_cluster_list_add_basic_cluster(cluster_list_first, basic_attr_list, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
 
     esp_zb_ep_list_add_ep(ep_list, cluster_list_first, (esp_zb_endpoint_config_t){
@@ -58,6 +58,40 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
     .app_device_id = ESP_ZB_HA_ON_OFF_SWITCH_DEVICE_ID,
     .app_device_version = 1
 });
+    
+    // ЕНДПОІНТ 2, БУТ СТАТУС!
+    // Конфіг 2 ендпоінта: статус готовності до завантаження 
+    esp_zb_endpoint_config_t endpoint_config_2 = {
+        .endpoint = 2,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_CUSTOM_ATTR_DEVICE_ID,
+        .app_device_version = 1
+    };
+
+    // Ініціалізація списку кластерів для другого ендпоінта
+    esp_zb_cluster_list_t *cluster_list_second = esp_zb_zcl_cluster_list_create();
+
+    // Додавання обов'язкових базових кластерів (КРИТИЧНО для розпізнавання в Z2M)
+    esp_zb_cluster_list_add_basic_cluster(cluster_list_second, esp_zb_basic_cluster_create(NULL), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+    esp_zb_cluster_list_add_identify_cluster(cluster_list_second, esp_zb_identify_cluster_create(NULL), ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    // Ініціалізація кастомного кластера для метаданих
+    esp_zb_attribute_list_t *cluster_custom_boot_status = esp_zb_zcl_attr_list_create(0xFF01); 
+
+    // Атрибут 0x0000: Статус завантаження
+    // Прапорець ESP_ZB_ZCL_ATTR_ACCESS_REPORTING вмикає автоматичне надсилання звіту при зміні.
+    esp_zb_custom_cluster_add_custom_attr(
+        cluster_custom_boot_status, 
+        0x0000, 
+        ESP_ZB_ZCL_ATTR_TYPE_U8, 
+        ESP_ZB_ZCL_ATTR_ACCESS_READ_WRITE | ESP_ZB_ZCL_ATTR_ACCESS_REPORTING, 
+        &boot_status
+    );
+
+    esp_zb_cluster_list_add_custom_cluster(cluster_list_second, cluster_custom_boot_status, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE);
+
+    esp_zb_ep_list_add_ep(ep_list, cluster_list_second, endpoint_config_2);
+
     
     // Конфіги для кластерів у циклі
     esp_zb_level_cluster_cfg_t level_cluster_cfg = { .current_level = 0x0 }; 
