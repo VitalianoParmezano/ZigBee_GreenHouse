@@ -1,5 +1,5 @@
 #include "endpoint_config.h"             // Файл з функцією для створення списку ендпоінтів пристрою
-#include "light_driver.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
+#include "my_led_strip.h"              // Файл з функцією для ініціалізації драйвера світла та встановлення рівня яскравості
 #include "reset_configuration.h"         // Файл з функцією для налаштування кнопки скидання
 #include "dip_switch.h"
 #include "esp_zb_switch.h"             // Заголовочний файл з конфігурацією Zigbee та визначеннями для цього проекту
@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"        // Головна бібліотека операційної системи реального часу FreeRTOS
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
+#include "light_driver.h"                  // Бібліотека для керування світлодіодами (LED) та драйверами світла
 
 #include "heart_beat.h"              // Обробка сигналу Heart Beat
 
@@ -82,9 +83,12 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             if (attr_msg->attribute.id == ESP_ZB_ZCL_ATTR_LEVEL_CONTROL_CURRENT_LEVEL_ID) {
                 uint8_t level = *(uint8_t *)attr_msg->attribute.data.value;
                 //light_driver_set_brightness(attr_msg->info.dst_endpoint, level);
-                led_strip_set_level(attr_msg->info.dst_endpoint, level);
-                int channel = attr_msg->info.dst_endpoint % 10; // Використовуємо номер ендпоінту як канал для Modbus
-                modbus_send_brightness_to_channel(level * 10, channel); // Записуємо яскравість у Modbus (для зовнішнього контролю)
+                //led_strip_set_level(attr_msg->info.dst_endpoint, level);
+                //int channel = attr_msg->info.dst_endpoint % 10; // Використовуємо номер ендпоінту як канал для Modbus
+                //modbus_send_brightness_to_channel(level * 10, channel); // Записуємо яскравість у Modbus (для зовнішнього контролю)
+                
+                set_level_of_driver_and_strip(level, attr_msg->info.dst_endpoint); // Викликаємо функцію для встановлення рівня яскравості на драйвері та стрічці
+            
             }
         // Отримання HEART BEAT (Cluster 0xFF01, Attribute 0x0000) сигналу
         } else if(attr_msg->info.dst_endpoint == 2 && attr_msg->attribute.id == 0x0) {

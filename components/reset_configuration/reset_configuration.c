@@ -4,7 +4,7 @@
 #include "button_gpio.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-#include "light_driver.h"
+#include "my_led_strip.h"
 #include "freertos/FreeRTOS.h"
 #include "esp_zigbee_core.h"
 #include "dip_switch.h"

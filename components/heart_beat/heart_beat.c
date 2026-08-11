@@ -5,6 +5,7 @@
 #include "esp_zigbee_core.h"
 #include "esp_timer.h"
 #include "esp_random.h"
+#include "light_driver.h" // Для виклику функції переходу в офлайн-режим
 
 static const char *TAG = "HEART_BEAT";
 
@@ -27,6 +28,7 @@ static void start_next_ping_timer(void);
 static void watchdog_timeout_callback(void* arg) {
     ESP_LOGE(TAG, "ВТРАЧЕНО ЗВ'ЯЗОК ІЗ СЕРВЕРОМ! Сервер не відповідає більше 3 хвилин.");
     
+    light_driver_set_offline(); // Викликаємо функцію переходу в офлайн-режим (вимикаємо світло)
     // TODO: Тут викликай функцію переходу в офлайн-режим
     // Наприклад: activate_phytolighting_offline_mode();
 }
