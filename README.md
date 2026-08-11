@@ -49,7 +49,7 @@ python demo_resolve.py
 python demo_resolve.py --now 21:15 --table
 ```
 
-## Реальний запуск
+## Запуск
 
 ```bash
 python -m venv venv

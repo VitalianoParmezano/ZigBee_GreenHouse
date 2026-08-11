@@ -83,7 +83,8 @@ class SchedulerService:
                 if result == "sent":
                     commands_sent += 1
                     timer_channels += 1
-                elif result == "unchanged":
+                elif result == "unchanged": # Зараз не використовується, але всерівно можна витягнути, можливо у майбутньому знадобиться.
+                    commands_sent += 1
                     timer_channels += 1
 
         log.info(
@@ -121,9 +122,9 @@ class SchedulerService:
             return "skipped"
 
         key = (zone, channel)
-        if self._last_sent.get(key) == target:
-            log.debug("%s: без змін (%s%%)", label, target)
-            return "unchanged"
+        # if self._last_sent.get(key) == target:
+        #     log.debug("%s: без змін (%s%%)", label, target)
+        #     return "unchanged"
 
         nxt = next_change(points, now_minutes)
         log.info(
