@@ -1,29 +1,53 @@
 /// ---------------------------------------------------------------------------
-// Мапінг зон/каналів на entity_id у Home Assistant.
-// ПІДПРАВ ЦІ ФУНКЦІЇ, якщо реальні entity_id у твоїй інсталяції відрізняються
-// (звір у Developer Tools -> States після пейрингу пристроїв).
+// GreenhouseZoneCard - керує зонами/каналами через LogicService (не напряму
+// через zigbee2mqtt і не через HA-сутності). Весь обмін даними - MQTT:
+//
+//   LogicService/Zone_x_Channel_y            <- retained, повний стан каналу
+//                                                (mode, scenarios, brightness, state)
+//   LogicService/Zone_x_Channel_y/set        -> запис (mode/scenarios/brightness)
+//   LogicService/Zone_x_Channel_y/get        -> запит стану (не критичний для
+//                                                картки - retained-топік вище
+//                                                вже дає актуальний стан одразу
+//                                                при підписці)
+//   LogicService/bridge/request              <- сповіщення про online/offline
+//                                                конкретного пристрою:
+//                                                {zone, device, status}
+//
+// mode - ОДИН НА ВСЮ ЗОНУ (усі CHANNELS_PER_ZONE каналів мають однаковий
+// режим одночасно). Це UI-рівнева інваріанта: клік по пілюлі режиму
+// публікує {mode: ...} в /set КОЖНОГО каналу зони одразу. scenarios
+// лишається per-channel. Офлайн-режим (offline_brightness) прибрано з
+// системи повністю - картка про нього більше нічого не знає.
+//
+// Синхронізація між картками: КОЖЕН відкритий екземпляр картки (на будь-якому
+// пристрої/вкладці) незалежно підписується на LogicService/+ через
+// hass.connection.subscribeMessage - тому зміна в одній картці (чи навіть
+// напряму з LogicService при спрацюванні таймера) миттєво долітає до всіх
+// інших відкритих карток без жодного опитування/polling.
 // ---------------------------------------------------------------------------
+
+const ZONES = 6;
 const CHANNELS_PER_ZONE = 3;
 const SCENARIO_SLOTS = 12;
-
-function lightEntity(zone, channel) {
-    return `light.zone_${zone}_channel_${channel}`;
-}
-function modeEntity(zone) {
-    return `select.zone_${zone}_mode`;
-}
-function scenariosEntity(zone, channel) {
-    return `text.zone_${zone}_scenarios_l${channel}`;
-}
-function getGroupNameByNumber(zone, channel = 1){
-return(`Zone_${zone}_Channel_${channel}`);
-}
+const CONTROL_PREFIX = 'LogicService';
+const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV1';
 
 // ---------------------------------------------------------------------------
 // Утиліти
 // ---------------------------------------------------------------------------
+function groupName(zone, channel) {
+    return `Zone_${zone}_Channel_${channel}`;
+}
+
+function parseGroupName(name) {
+    const m = /^Zone_(\d+)_Channel_(\d+)$/.exec(name);
+    if (!m) return null;
+    return { zone: Number(m[1]), channel: Number(m[2]) };
+}
+
 function safeParseScenarios(rawValue) {
     if (!rawValue) return [];
+    if (Array.isArray(rawValue)) return rawValue;
     try {
         const parsed = JSON.parse(rawValue);
         return Array.isArray(parsed) ? parsed : [];
@@ -38,23 +62,29 @@ function clampPercent(value) {
     return Math.min(100, Math.max(0, Math.round(n)));
 }
 
+const DEFAULT_CHANNEL_STATE = { mode: 'manual', scenarios: [], brightness: 0, state: 'OFF' };
+
 class GreenhouseZoneCard extends HTMLElement {
 
     constructor() {
         super();
-        this._mqttSubscribed = false; // Замок від повторних підписок
-        this._z2mGroups = [];          // Масив груп з zigbee2mqtt/bridge/groups
-        this._z2mDevices = [];         // Масив пристроїв з zigbee2mqtt/bridge/devices (ieee -> friendly_name)
-        this._deviceStateCache = {};   // friendly_name -> останній повний JSON стану пристрою (zigbee2mqtt/<name>)
-        this._unsubMqtt = null;        // Функції відписки при закритті сторінки
-        this._unsubMqttDevices = null;
-        this._unsubMqttStates = null;
+        this._mqttSubscribed = false;
+        this._unsubMqtt = null;
+        this._unsubBridgeRequest = null;
+        // Zone_x_Channel_y -> { mode, scenarios, brightness, state }
+        // Наповнюється ЛИШЕ з LogicService/+ (retained стан + живі оновлення).
+        this._channelState = {};
+        // device (ieee-адреса) -> { zone, device, status: 'offline' }
+        // Персистентний список ПОТОЧНО офлайн-пристроїв - не залежить від
+        // того, чи закрив оператор спливаючий тост. Очищується лише коли
+        // прийде повідомлення status: 'online' для того самого device.
+        this._offlineDevices = {};
+        this._toastStackRoot = null;
+        this._offlineListModalRoot = null;
     }
 
     setConfig(config) {
-        this.config = config;
-        console.log("Перевірка чи сюди дійшов код 2");
-
+        this.config = config || {};
     }
 
     getGridOptions() {
@@ -70,25 +100,132 @@ class GreenhouseZoneCard extends HTMLElement {
         return 4;
     }
 
- set hass(hass) {
+    set hass(hass) {
         this._hass = hass;
 
-        // Підписка на MQTT
         if (!this._mqttSubscribed && this._hass && this._hass.connection) {
-            this._mqttSubscribed = true; // Замикаємо замок
-            this._subscribeToMqtt();     // Запускаємо WebSocket-запит
+            this._mqttSubscribed = true;
+            this._subscribeToMqtt();
         }
-        // ------------------------------------
 
         if (!this.content) {
             this._buildBaseLayout();
         }
 
-        this._updateZoneStatuses(hass);
+        this._updateZoneStatuses();
 
         if (this._modalState && this._modalState.open) {
             this._refreshModalLiveValues();
         }
+    }
+
+    // -------------------------------------------------------------------
+    // MQTT: стан каналів + повідомлення про online/offline пристроїв
+    // -------------------------------------------------------------------
+    async _subscribeToMqtt() {
+        try {
+            this._unsubMqtt = await this._hass.connection.subscribeMessage(
+                (message) => this._onLogicServiceMessage(message),
+                { type: 'mqtt/subscribe', topic: `${CONTROL_PREFIX}/+` }
+            );
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Не вдалось підписатись на MQTT:', err);
+            this._mqttSubscribed = false; // дозволяємо повторну спробу при наступному set hass()
+        }
+
+        try {
+            this._unsubBridgeRequest = await this._hass.connection.subscribeMessage(
+                (message) => this._onBridgeRequestMessage(message),
+                { type: 'mqtt/subscribe', topic: `${CONTROL_PREFIX}/bridge/request` }
+            );
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Не вдалось підписатись на bridge/request:', err);
+        }
+    }
+
+    _onLogicServiceMessage(message) {
+        const prefix = `${CONTROL_PREFIX}/`;
+        if (!message.topic.startsWith(prefix)) return;
+
+        const group = message.topic.slice(prefix.length);
+        // Цікавить лише LogicService/<group> (без /set, /get, і без bridge/*,
+        // де є "/") - саме там лежить повний стан каналу.
+        if (group.includes('/')) return;
+
+        let parsed;
+        try {
+            parsed = JSON.parse(message.payload);
+        } catch {
+            return;
+        }
+
+        this._channelState[group] = parsed;
+        this._updateZoneStatuses();
+
+        if (!this._modalState || !this._modalState.open) return;
+
+        const { zone, activeChannel } = this._modalState;
+        const info = parseGroupName(group);
+        if (!info || info.zone !== zone) return;
+
+        // mode спільний на всю зону - зміна БУДЬ-ЯКОГО каналу цієї зони
+        // могла стосуватись режиму, тож пілюлі оновлюємо завжди.
+        this._renderModeRow();
+
+        if (info.channel === activeChannel) {
+            this._refreshChannelSpecificValues();
+        }
+    }
+
+    // { zone, device, status: 'offline' | 'online' }
+    _onBridgeRequestMessage(message) {
+        let data;
+        try {
+            data = JSON.parse(message.payload);
+        } catch {
+            console.warn('[GreenhouseZoneCard] Некоректний JSON у bridge/request:', message.payload);
+            return;
+        }
+
+        const { zone, device, status } = data || {};
+        if (!device || (status !== 'offline' && status !== 'online')) return;
+
+        if (status === 'offline') {
+            this._offlineDevices[device] = { zone, device, status: 'offline' };
+        } else {
+            delete this._offlineDevices[device];
+        }
+
+        this._showToast(status, zone, device);
+        this._updateOfflineBadge();
+    }
+
+    _getChannelState(zone, channel) {
+        return this._channelState[groupName(zone, channel)] || DEFAULT_CHANNEL_STATE;
+    }
+
+    async _publishSet(zone, channel, payload) {
+        if (!this._hass) return;
+        const topic = `${CONTROL_PREFIX}/${groupName(zone, channel)}/set`;
+        try {
+            await this._hass.callService('mqtt', 'publish', {
+                topic,
+                payload: JSON.stringify(payload),
+            });
+        } catch (err) {
+            console.error(`[GreenhouseZoneCard] Помилка публікації в ${topic}:`, err);
+        }
+    }
+
+    // mode - ОДИН на всю зону: публікуємо в /set КОЖНОГО каналу зони.
+    _setZoneMode(zone, newMode) {
+        for (let ch = 1; ch <= CHANNELS_PER_ZONE; ch++) {
+            this._publishSet(zone, ch, { mode: newMode });
+            const cfg = this._getChannelState(zone, ch);
+            this._channelState[groupName(zone, ch)] = { ...cfg, mode: newMode };
+        }
+        this._renderModeRow();
+        this._renderModalBody();
     }
 
     // -------------------------------------------------------------------
@@ -111,6 +248,7 @@ class GreenhouseZoneCard extends HTMLElement {
             height: 100%;
             padding: 0;
             box-sizing: border-box;
+            position: relative;
         }
 
         .grid-container {
@@ -164,234 +302,40 @@ class GreenhouseZoneCard extends HTMLElement {
             opacity: 0.6;
         }
 
-        /* ---------------- Модальне вікно ---------------- */
-
-        .gh-modal-overlay {
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.55);
-            display: flex;
+        .gh-offline-badge {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: none;
             align-items: center;
-            justify-content: center;
-            z-index: 999;
-        }
-
-        .gh-modal-box {
-            background: var(--card-background-color, #1c1c1c);
-            color: var(--primary-text-color);
-            border-radius: 16px;
-            width: min(560px, 92vw);
-            max-height: 88vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            box-shadow: 0 8px 40px rgba(0, 0, 0, 0.4);
-        }
-
-        .gh-modal-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 16px 20px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .gh-modal-title {
-            font-size: 18px;
-            font-weight: 600;
-        }
-
-        .gh-modal-close {
-            background: none;
-            border: none;
-            color: var(--primary-text-color);
-            font-size: 20px;
-            cursor: pointer;
-            opacity: 0.7;
-            line-height: 1;
-            padding: 4px;
-        }
-        .gh-modal-close:hover { opacity: 1; }
-
-        .gh-mode-row, .gh-tabs-row {
-            display: flex;
-            gap: 8px;
-            padding: 12px 20px 0 20px;
-        }
-
-        .gh-pill {
-            flex: 1;
-            text-align: center;
-            padding: 8px 10px;
-            border-radius: 999px;
-            border: 1px solid rgba(255, 255, 255, 0.15);
-            background: rgba(255, 255, 255, 0.05);
-            color: var(--primary-text-color);
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-
-        .gh-pill.active {
-            background: var(--primary-color, #03a9f4);
-            border-color: var(--primary-color, #03a9f4);
-            color: white;
-            font-weight: 600;
-        }
-
-        .gh-tabs-row { padding-top: 10px; }
-        .gh-tabs-row .gh-pill { border-radius: 10px; }
-
-        .gh-modal-body {
-            padding: 16px 20px 20px 20px;
-            overflow-y: auto;
-            flex: 1;
-        }
-
-        .gh-section-title {
-            font-size: 13px;
-            opacity: 0.6;
-            margin: 14px 0 8px 0;
-            text-transform: uppercase;
-            letter-spacing: 0.04em;
-        }
-        .gh-section-title:first-child { margin-top: 0; }
-
-        .gh-field-row {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 10px;
-        }
-
-        .gh-field-label {
-            flex: 0 0 120px;
-            font-size: 13px;
-            opacity: 0.8;
-        }
-
-        .gh-field-row input[type="range"] { flex: 1; }
-        .gh-field-row input[type="number"] {
-            width: 70px;
-            padding: 6px 8px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.06);
-            color: var(--primary-text-color);
-        }
-
-        .gh-toggle-btn {
-            padding: 6px 14px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.06);
-            color: var(--primary-text-color);
-            cursor: pointer;
-        }
-        .gh-toggle-btn.on {
-            background: #4caf50;
-            border-color: #4caf50;
-            color: white;
-        }
-
-        .gh-scenario-row {
-            display: grid;
-            grid-template-columns: 24px 1fr 90px;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 6px;
-        }
-
-        .gh-scenario-index {
-            font-size: 12px;
-            opacity: 0.5;
-            text-align: right;
-        }
-
-        .gh-scenario-row input[type="number"] {
-            padding: 6px 8px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.06);
-            color: var(--primary-text-color);
-            width: 100%;
-            box-sizing: border-box;
-        }
-
-        .gh-time-input {
-            display: flex;
-            align-items: center;
-            justify-content: center;
             gap: 4px;
-            padding: 4px 6px;
-            border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.06);
-            box-sizing: border-box;
-        }
-
-        .gh-time-part {
-            width: 28px;
-            padding: 4px 0;
-            border: none;
-            background: transparent;
-            color: var(--primary-text-color);
-            font-size: 16px;
-            font-variant-numeric: tabular-nums;
-            text-align: center;
-            box-sizing: border-box;
-        }
-        .gh-time-part:focus {
-            outline: none;
-            background: rgba(255, 255, 255, 0.12);
-            border-radius: 4px;
-        }
-        .gh-time-part::-webkit-outer-spin-button,
-        .gh-time-part::-webkit-inner-spin-button {
-            -webkit-appearance: none;
-            margin: 0;
-        }
-
-        .gh-time-sep {
-            opacity: 0.6;
-            font-size: 16px;
-        }
-
-        .gh-save-btn {
-            margin-top: 14px;
-            width: 100%;
-            padding: 10px;
-            border-radius: 10px;
-            border: none;
-            background: var(--primary-color, #03a9f4);
-            color: white;
+            background: rgba(244, 67, 54, 0.15);
+            border: 1px solid rgba(244, 67, 54, 0.4);
+            color: #f44336;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 12px;
             font-weight: 600;
             cursor: pointer;
+            z-index: 10;
         }
-        .gh-save-btn:active { opacity: 0.85; }
-
-        .gh-hint {
-            font-size: 12px;
-            opacity: 0.55;
-            margin-top: 8px;
-        }
-
-        .gh-auto-placeholder {
-            padding: 40px 10px;
-            text-align: center;
-            opacity: 0.6;
-            font-size: 15px;
+        .gh-offline-badge ha-icon {
+            --mdc-icon-size: 16px;
         }
       </style>
 
       <ha-card>
+        <div class="gh-offline-badge" id="gh-offline-badge">
+            <ha-icon icon="mdi:wifi-off"></ha-icon>
+            <span id="gh-offline-count">0</span>
+        </div>
         <div class="grid-container" id="grid"></div>
       </ha-card>
     `;
 
         this.content = this.querySelector('#grid');
 
-        for (let i = 1; i <= 6; i++) {
+        for (let i = 1; i <= ZONES; i++) {
             const cell = document.createElement('div');
             cell.className = 'zone-cell';
             cell.innerHTML = `
@@ -404,66 +348,135 @@ class GreenhouseZoneCard extends HTMLElement {
             this.content.appendChild(cell);
         }
 
+        this.querySelector('#gh-offline-badge').addEventListener('click', () => this._openOfflineListModal());
+        this._updateOfflineBadge();
     }
 
     // -------------------------------------------------------------------
-    // Оновлення міток стану на плитках зон
+    // Оновлення міток стану на плитках зон (за станом каналу 1 кожної зони)
     // -------------------------------------------------------------------
-    _updateZoneStatuses(hass) {
-        for (let i = 1; i <= 6; i++) {
+    _updateZoneStatuses() {
+        for (let i = 1; i <= ZONES; i++) {
             const iconEl = this.querySelector(`#zone-${i}-icon`);
             const statusEl = this.querySelector(`#zone-${i}-val`);
-
             if (!iconEl || !statusEl) continue;
 
-            const entityId = lightEntity(i, 1);
-            const stateObj = hass.states[entityId];
-            const state = stateObj ? stateObj.state : 'none';
-
-            if (['unavailable', 'unknown', 'none'].includes(state)) {
-                statusEl.innerText = 'Офлайн';
-                iconEl.style.color = 'grey';
-                iconEl.style.opacity = '0.5';
-            } else {
-                iconEl.style.opacity = '1';
-                if (state === 'on') {
-                    statusEl.innerText = 'Увімкнено';
-                    iconEl.style.color = '#4caf50';
-                } else {
-                    statusEl.innerText = 'Вимкнено';
-                    iconEl.style.color = '#03a9f4';
-                }
-            }
+            const cfg = this._getChannelState(i, 1);
+            const isOn = cfg.state === 'ON';
+            statusEl.textContent = isOn ? `Увімкнено · ${cfg.brightness}%` : 'Вимкнено';
+            iconEl.style.color = isOn ? '#4caf50' : 'grey';
         }
     }
 
     // -------------------------------------------------------------------
-    // Модальне вікно
+    // Тости про online/offline пристроїв - fixed-position стек, живе в
+    // document.body (не всередині картки), щоб бути видимим завжди,
+    // незалежно від скролу/розміщення картки на дашборді. Тост зникає
+    // ЛИШЕ по кліку на хрестик - жодного авто-приховування, щоб оператор
+    // гарантовано побачив сповіщення.
     // -------------------------------------------------------------------
-    _openZoneModal(zone) {
-        //absolute = this._getGroupMembersByGroupName(`Zone_${zone}_Channel_1`);
+    _ensureToastStack() {
+        if (this._toastStackRoot) return this._toastStackRoot;
 
-        const hass = this._hass;
+        const root = document.createElement('div');
+        root.innerHTML = `
+            <style>
+                .gh-toast-stack {
+                    position: fixed;
+                    top: 16px;
+                    right: 16px;
+                    z-index: 1000000;
+                    display: flex;
+                    flex-direction: column;
+                    gap: 8px;
+                    max-width: 320px;
+                }
+                .gh-toast {
+                    display: flex;
+                    align-items: flex-start;
+                    gap: 10px;
+                    padding: 12px 14px;
+                    border-radius: 12px;
+                    background: var(--card-background-color, #1c1c1c);
+                    color: var(--primary-text-color);
+                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+                    border: 1px solid rgba(255, 255, 255, 0.12);
+                    animation: gh-toast-in 0.2s ease;
+                }
+                @keyframes gh-toast-in {
+                    from { opacity: 0; transform: translateX(20px); }
+                    to { opacity: 1; transform: translateX(0); }
+                }
+                .gh-toast-offline { border-left: 3px solid #f44336; }
+                .gh-toast-online { border-left: 3px solid #4caf50; }
+                .gh-toast-icon ha-icon { --mdc-icon-size: 22px; }
+                .gh-toast-offline .gh-toast-icon { color: #f44336; }
+                .gh-toast-online .gh-toast-icon { color: #4caf50; }
+                .gh-toast-text { flex: 1; }
+                .gh-toast-title { font-size: 13px; font-weight: 600; }
+                .gh-toast-sub { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+                .gh-toast-close {
+                    background: none;
+                    border: none;
+                    color: var(--primary-text-color);
+                    opacity: 0.6;
+                    cursor: pointer;
+                    font-size: 14px;
+                    line-height: 1;
+                    padding: 2px;
+                }
+                .gh-toast-close:hover { opacity: 1; }
+            </style>
+            <div class="gh-toast-stack" id="gh-toast-stack"></div>
+        `;
+        document.body.appendChild(root);
+        this._toastStackRoot = root;
+        return root;
+    }
 
-        // Читаємо mode напряму з живого MQTT-кешу стану пристрою (той самий блок,
-        // що ти бачив у MQTT Explorer), а не через hass.states — це узгоджено з тим,
-        // що запис теж іде напряму в Zigbee2MQTT, минаючи HA-сутності.
-        const currentMode = this._getFieldFromZoneChannel(zone, 1, 'mode', 'manual');
-        console.log('[GreenhouseZoneCard] Відкриття зони', zone, '| поточний mode з MQTT-кешу:', currentMode);
+    _showToast(status, zone, device) {
+        const root = this._ensureToastStack();
+        const stack = root.querySelector('#gh-toast-stack');
+        const isOffline = status === 'offline';
 
-        this._modalState = {
-            open: true,
-            zone,
-            mode: currentMode,
-            activeChannel: 1,
-        };
+        const toast = document.createElement('div');
+        toast.className = `gh-toast gh-toast-${isOffline ? 'offline' : 'online'}`;
+        toast.innerHTML = `
+            <div class="gh-toast-icon"><ha-icon icon="${isOffline ? 'mdi:wifi-off' : 'mdi:wifi-check'}"></ha-icon></div>
+            <div class="gh-toast-text">
+                <div class="gh-toast-title">${isOffline ? 'Пристрій офлайн' : "Зв'язок відновлено"}</div>
+                <div class="gh-toast-sub">Зона ${zone} · ${device}</div>
+            </div>
+            <button class="gh-toast-close">✕</button>
+        `;
 
+        toast.querySelector('.gh-toast-close').addEventListener('click', () => toast.remove());
+        stack.appendChild(toast);
+    }
+
+    // -------------------------------------------------------------------
+    // Бейдж-лічильник офлайн-пристроїв на картці + модалка зі списком.
+    // Бейдж лишається видимим, навіть якщо оператор закрив усі тости -
+    // єдиний спосіб його прибрати - щоб прийшло status: 'online'.
+    // -------------------------------------------------------------------
+    _updateOfflineBadge() {
+        const badge = this.querySelector('#gh-offline-badge');
+        const countEl = this.querySelector('#gh-offline-count');
+        if (!badge || !countEl) return;
+
+        const count = Object.keys(this._offlineDevices).length;
+        countEl.textContent = String(count);
+        badge.style.display = count > 0 ? 'flex' : 'none';
+
+        if (this._offlineListModalRoot) {
+            this._renderOfflineListModalBody();
+        }
+    }
+
+    _openOfflineListModal() {
         const overlay = document.createElement('div');
         overlay.className = 'gh-modal-overlay';
-        overlay.id = 'gh-modal-overlay';
 
-        // Вставляємо стилі модального вікна безпосередньо в сам оверлей,
-        // щоб вони працювали в глобальному document.body незалежно від Shadow DOM картки!
         overlay.innerHTML = `
             <style>
                 .gh-modal-overlay {
@@ -473,7 +486,136 @@ class GreenhouseZoneCard extends HTMLElement {
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    z-index: 999999; /* Піднято до 999999, щоб точно перекрити всі шапки HA */
+                    z-index: 999999;
+                    backdrop-filter: blur(4px);
+                    -webkit-backdrop-filter: blur(4px);
+                }
+                .gh-modal-box {
+                    background: var(--card-background-color, #1c1c1c);
+                    color: var(--primary-text-color);
+                    border-radius: 16px;
+                    width: min(420px, 92vw);
+                    max-height: 80vh;
+                    display: flex;
+                    flex-direction: column;
+                    overflow: hidden;
+                    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                }
+                .gh-modal-header {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 16px 20px;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+                }
+                .gh-modal-title { font-size: 18px; font-weight: 600; }
+                .gh-modal-close {
+                    background: none;
+                    border: none;
+                    color: var(--primary-text-color);
+                    font-size: 20px;
+                    cursor: pointer;
+                    opacity: 0.7;
+                    line-height: 1;
+                    padding: 4px;
+                }
+                .gh-modal-close:hover { opacity: 1; }
+                .gh-offline-list-body {
+                    padding: 12px 20px 20px 20px;
+                    overflow-y: auto;
+                }
+                .gh-offline-list-empty {
+                    padding: 30px 10px;
+                    text-align: center;
+                    opacity: 0.6;
+                    font-size: 14px;
+                }
+                .gh-offline-item {
+                    display: flex;
+                    align-items: center;
+                    gap: 10px;
+                    padding: 10px 0;
+                    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                }
+                .gh-offline-item:last-child { border-bottom: none; }
+                .gh-offline-item ha-icon { color: #f44336; --mdc-icon-size: 20px; }
+                .gh-offline-item-text { flex: 1; }
+                .gh-offline-item-zone { font-size: 14px; font-weight: 600; }
+                .gh-offline-item-device { font-size: 12px; opacity: 0.6; font-family: monospace; }
+            </style>
+            <div class="gh-modal-box">
+                <div class="gh-modal-header">
+                    <div class="gh-modal-title">Офлайн-пристрої</div>
+                    <button class="gh-modal-close" id="gh-offline-modal-close">✕</button>
+                </div>
+                <div class="gh-offline-list-body" id="gh-offline-list-body"></div>
+            </div>
+        `;
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) this._closeOfflineListModal();
+        });
+
+        document.body.appendChild(overlay);
+        this._offlineListModalRoot = overlay;
+        overlay.querySelector('#gh-offline-modal-close').addEventListener('click', () => this._closeOfflineListModal());
+
+        this._renderOfflineListModalBody();
+    }
+
+    _closeOfflineListModal() {
+        if (this._offlineListModalRoot) {
+            this._offlineListModalRoot.remove();
+            this._offlineListModalRoot = null;
+        }
+    }
+
+    _renderOfflineListModalBody() {
+        if (!this._offlineListModalRoot) return;
+        const body = this._offlineListModalRoot.querySelector('#gh-offline-list-body');
+        const items = Object.values(this._offlineDevices);
+
+        if (items.length === 0) {
+            body.innerHTML = `<div class="gh-offline-list-empty">Немає офлайн-пристроїв</div>`;
+            return;
+        }
+
+        body.innerHTML = items
+            .map((item) => `
+                <div class="gh-offline-item">
+                    <ha-icon icon="mdi:wifi-off"></ha-icon>
+                    <div class="gh-offline-item-text">
+                        <div class="gh-offline-item-zone">Зона ${item.zone}</div>
+                        <div class="gh-offline-item-device">${item.device}</div>
+                    </div>
+                </div>
+            `)
+            .join('');
+    }
+
+    // -------------------------------------------------------------------
+    // Модальне вікно зони
+    // -------------------------------------------------------------------
+    _openZoneModal(zone) {
+        this._modalState = { open: true, zone, activeChannel: 1 };
+
+        const overlay = document.createElement('div');
+        overlay.className = 'gh-modal-overlay';
+        overlay.id = 'gh-modal-overlay';
+
+        // Стилі модалки вставляються прямо в оверлей - overlay живе в document.body,
+        // поза Shadow DOM картки, тож глобальні стилі сюди не дістануть самі.
+        overlay.innerHTML = `
+            <style>
+                .gh-modal-overlay {
+                    position: fixed;
+                    inset: 0;
+                    background: rgba(0, 0, 0, 0.65);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    z-index: 999999;
                     backdrop-filter: blur(4px);
                     -webkit-backdrop-filter: blur(4px);
                 }
@@ -639,6 +781,23 @@ class GreenhouseZoneCard extends HTMLElement {
                     opacity: 0.6;
                     font-size: 16px;
                 }
+                .gh-btn-row {
+                    display: flex;
+                    gap: 8px;
+                    margin-top: 14px;
+                }
+                .gh-btn-row .gh-save-btn { margin-top: 0; flex: 2; }
+                .gh-secondary-btn {
+                    flex: 1;
+                    padding: 10px;
+                    border-radius: 10px;
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    background: rgba(255, 255, 255, 0.06);
+                    color: var(--primary-text-color);
+                    font-weight: 600;
+                    cursor: pointer;
+                }
+                .gh-secondary-btn:active { opacity: 0.85; }
                 .gh-save-btn {
                     margin-top: 14px;
                     width: 100%;
@@ -676,8 +835,6 @@ class GreenhouseZoneCard extends HTMLElement {
             </div>
         `;
 
-        
-        // Закриття по кліку на фон або на хрестик
         overlay.addEventListener('click', (e) => {
             if (e.target === overlay) this._closeModal();
         });
@@ -692,19 +849,9 @@ class GreenhouseZoneCard extends HTMLElement {
         };
         document.addEventListener('keydown', this._escHandler);
 
-        const titleDiv = overlay.querySelector('.gh-modal-title');
-        titleDiv.addEventListener('click', function() {
-        console.group('Логер погнав!');
-        console.log(`Вигляд Станів:`);
-        console.log(hass.states);
-        console.groupEnd();
-        });
-
         this._renderModeRow();
         this._renderTabsRow();
         this._renderModalBody();
-
-
     }
 
     _closeModal() {
@@ -719,8 +866,11 @@ class GreenhouseZoneCard extends HTMLElement {
         this._modalState = null;
     }
 
+    // mode - ОДИН на всю зону: читаємо стан каналу 1 (усі канали мають
+    // збігатись), клік по пілюлі застосовує режим одразу на КОЖЕН канал зони.
     _renderModeRow() {
-        const { mode } = this._modalState;
+        const { zone } = this._modalState;
+        const cfg = this._getChannelState(zone, 1);
         const row = this._modalRoot.querySelector('#gh-mode-row');
         const modes = [
             { key: 'manual', label: 'Мануал' },
@@ -729,29 +879,14 @@ class GreenhouseZoneCard extends HTMLElement {
         ];
 
         row.innerHTML = modes
-            .map((m) => `<div class="gh-pill ${m.key === mode ? 'active' : ''}" data-mode="${m.key}">${m.label}</div>`)
+            .map((m) => `<div class="gh-pill ${m.key === cfg.mode ? 'active' : ''}" data-mode="${m.key}">${m.label}</div>`)
             .join('');
 
         row.querySelectorAll('.gh-pill').forEach((el) => {
             el.addEventListener('click', () => {
                 const newMode = el.dataset.mode;
-                if (newMode === this._modalState.mode) return;
-
-                this._modalState.mode = newMode;
-
-                // Режим спільний на всю зону — пишеться одразу в select-сутність пристрою
-                this._hass.callService('select', 'select_option', {
-                    entity_id: modeEntity(this._modalState.zone),
-                    option: newMode,
-                });
-
-                // Режим стосується всього пристрою, тож досить взяти членів
-                // групи БУДЬ-ЯКОГО одного каналу зони (беремо канал 1) —
-                // фізичні пристрої там ті самі, що й у групах інших каналів.
-                this._sendDataByGroupName(`Zone_${this._modalState.zone}_Channel_1`, newMode, 'mode');
-
-                this._renderModeRow();
-                this._renderModalBody();
+                if (newMode === cfg.mode) return;
+                this._setZoneMode(zone, newMode);
             });
         });
     }
@@ -774,52 +909,33 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     _renderModalBody() {
-        const { zone, mode, activeChannel } = this._modalState;
+        const { zone, activeChannel } = this._modalState;
+        const zoneMode = this._getChannelState(zone, 1).mode; // спільний на всю зону
         const body = this._modalRoot.querySelector('#gh-modal-body');
-        const hass = this._hass;
 
-        let html = '';
-
-        // Оффлайн-яскравість — незалежна від режиму настройка каналу,
-        // тож показується завжди, під будь-яким режимом.
-        // Читається напряму з MQTT-кешу (той самий блок offline_brightness_lN).
-        const offlineValue = this._getFieldFromZoneChannel(zone, activeChannel, `offline_brightness_l${activeChannel}`, 50);
-
-        html += `
-            <div class="gh-section-title">Яскравість без зв'язку (Канал ${activeChannel})</div>
-            <div class="gh-field-row">
-                <input type="range" min="0" max="100" id="gh-offline-range" value="${offlineValue}">
-                <input type="number" min="0" max="100" id="gh-offline-number" value="${offlineValue}">
-            </div>
-        `;
-
-        if (mode === 'manual') {
-            html += this._renderManualSection(zone, activeChannel);
-        } else if (mode === 'timer') {
-            html += this._renderTimerSection(zone, activeChannel);
+        let html;
+        if (zoneMode === 'manual') {
+            html = this._renderManualSection(zone, activeChannel);
+        } else if (zoneMode === 'timer') {
+            html = this._renderTimerSection(zone, activeChannel);
         } else {
-            html += `<div class="gh-auto-placeholder">To be continued...</div>`;
+            // TODO: авторежим ще не реалізовано на бекенді (service.py: mode=='auto' -> skip)
+            html = `<div class="gh-auto-placeholder">Авторежим ще не реалізовано (TODO)</div>`;
         }
 
         body.innerHTML = html;
 
-        this._attachOfflineBrightnessListeners(zone, activeChannel);
-
-        if (mode === 'manual') {
+        if (zoneMode === 'manual') {
             this._attachManualListeners(zone, activeChannel);
-        } else if (mode === 'timer') {
+        } else if (zoneMode === 'timer') {
             this._attachTimerListeners(zone, activeChannel);
         }
     }
 
     _renderManualSection(zone, channel) {
-        const hass = this._hass;
-        const entityId = lightEntity(zone, channel);
-        const stateObj = hass.states[entityId];
-        const isOn = stateObj ? stateObj.state === 'on' : false;
-        const brightnessPct = stateObj && stateObj.attributes.brightness
-            ? Math.round((stateObj.attributes.brightness / 255) * 100)
-            : 0;
+        const cfg = this._getChannelState(zone, channel);
+        const isOn = cfg.state === 'ON';
+        const brightnessPct = cfg.brightness || 0;
 
         return `
             <div class="gh-section-title">Ручний режим (Канал ${channel})</div>
@@ -835,10 +951,66 @@ class GreenhouseZoneCard extends HTMLElement {
         `;
     }
 
+    _attachManualListeners(zone, channel) {
+        const toggleBtn = this._modalRoot.querySelector('#gh-manual-toggle');
+        const range = this._modalRoot.querySelector('#gh-manual-range');
+        const number = this._modalRoot.querySelector('#gh-manual-number');
+
+        // ВАЖЛИВО: LogicService не має окремого поля "state" для запису -
+        // "state" на виході лише ПОХІДНИЙ від brightness (brightness>0 -> ON).
+        // Тому і тумблер, і повзунок керують ОДНИМ полем - brightness.
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', () => {
+                const willTurnOn = !toggleBtn.classList.contains('on');
+                const cfg = this._getChannelState(zone, channel);
+                const targetBrightness = willTurnOn ? (cfg.brightness > 0 ? cfg.brightness : 100) : 0;
+
+                this._publishSet(zone, channel, { brightness: targetBrightness });
+
+                toggleBtn.classList.toggle('on', willTurnOn);
+                toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
+                if (range) range.value = targetBrightness;
+                if (number) number.value = targetBrightness;
+
+                this._channelState[groupName(zone, channel)] = {
+                    ...cfg, brightness: targetBrightness, state: willTurnOn ? 'ON' : 'OFF',
+                };
+                this._updateZoneStatuses();
+            });
+        }
+
+        if (range && number) {
+            const sync = (value) => {
+                range.value = value;
+                number.value = value;
+            };
+            const commit = (value) => {
+                const clamped = clampPercent(value);
+                sync(clamped);
+
+                this._publishSet(zone, channel, { brightness: clamped });
+
+                const cfg = this._getChannelState(zone, channel);
+                this._channelState[groupName(zone, channel)] = {
+                    ...cfg, brightness: clamped, state: clamped > 0 ? 'ON' : 'OFF',
+                };
+
+                const toggle = this._modalRoot.querySelector('#gh-manual-toggle');
+                if (toggle) {
+                    toggle.classList.toggle('on', clamped > 0);
+                    toggle.innerText = clamped > 0 ? 'Увімкнено' : 'Вимкнено';
+                }
+                this._updateZoneStatuses();
+            };
+
+            range.addEventListener('input', () => sync(range.value));
+            range.addEventListener('change', () => commit(range.value));
+            number.addEventListener('change', () => commit(number.value));
+        }
+    }
+
     _renderTimerSection(zone, channel) {
-        // Читається напряму з MQTT-кешу (scenarios_lN — рядок JSON, як у Z2M).
-        const rawScenarios = this._getFieldFromZoneChannel(zone, channel, `scenarios_l${channel}`, null);
-        const scenarios = safeParseScenarios(rawScenarios);
+        const scenarios = this._getChannelState(zone, channel).scenarios || [];
 
         let rowsHtml = '';
         for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
@@ -866,102 +1038,22 @@ class GreenhouseZoneCard extends HTMLElement {
         return `
             <div class="gh-section-title">Таймерний розклад (Канал ${channel})</div>
             ${rowsHtml}
+            <div class="gh-btn-row">
+                <button class="gh-secondary-btn" id="gh-copy-scenarios">Копіювати розклад</button>
+                <button class="gh-secondary-btn" id="gh-paste-scenarios">Вставити розклад</button>
+            </div>
             <button class="gh-save-btn" id="gh-save-scenarios">Зберегти розклад</button>
-            <div class="gh-hint">Порожні рядки (без часу) ігноруються при збереженні.</div>
+            <div class="gh-hint">
+                Порожні рядки (без часу) ігноруються при збереженні.
+                Копіювання/вставка працює між будь-якими зонами й каналами
+                (буфер спільний, зберігається в браузері).
+            </div>
         `;
     }
 
-_attachOfflineBrightnessListeners(zone, channel) {
-        const range = this._modalRoot.querySelector('#gh-offline-range');
-        const number = this._modalRoot.querySelector('#gh-offline-number');
-        if (!range || !number) return;
-
-        const sync = (value) => {
-            range.value = value;
-            number.value = value;
-        };
-
-        const commit = (value) => {
-            const clamped = clampPercent(value);
-            sync(clamped);
-            
-            this._sendDataByGroupName(getGroupNameByNumber(zone, channel), clamped, 'offline_brightness');
-        };
-
-        range.addEventListener('input', () => sync(range.value));
-        range.addEventListener('change', () => commit(range.value));
-        number.addEventListener('change', () => commit(number.value));
-    }
-
-    _attachManualListeners(zone, channel) {
-        const toggleBtn = this._modalRoot.querySelector('#gh-manual-toggle');
-        const range = this._modalRoot.querySelector('#gh-manual-range');
-        const number = this._modalRoot.querySelector('#gh-manual-number');
-        const entityId = lightEntity(zone, channel);
-
-        // if (toggleBtn) {
-        //     toggleBtn.addEventListener('click', () => {
-        //         const willTurnOn = !toggleBtn.classList.contains('on');
-        //         this._hass.callService('light', willTurnOn ? 'turn_on' : 'turn_off', {
-        //             entity_id: entityId,
-        //         });
-        //         toggleBtn.classList.toggle('on', willTurnOn);
-        //         toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
-        //     });
-        // }
-            if (toggleBtn) {
-                toggleBtn.addEventListener('click', () => {
-                    const willTurnOn = !toggleBtn.classList.contains('on');
-                    const stateValue = willTurnOn ? 'ON' : 'OFF';
-                    
-                    // Надсилаємо команду прямо в Zigbee2MQTT
-                    this._sendDataByGroupName(getGroupNameByNumber(zone, channel), stateValue, 'state');
-
-                    toggleBtn.classList.toggle('on', willTurnOn);
-                    toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
-                });
-            }
-
-        // if (range && number) {
-        //     const sync = (value) => {
-        //         range.value = value;
-        //         number.value = value;
-        //     };
-        //     const commit = (value) => {
-        //         const clamped = clampPercent(value);
-        //         sync(clamped);
-        //         this._hass.callService('light', 'turn_on', {
-        //             entity_id: entityId,
-        //             brightness_pct: clamped,
-        //         });
-        //     };
-
-        //     range.addEventListener('input', () => sync(range.value));
-        //     range.addEventListener('change', () => commit(range.value));
-        //     number.addEventListener('change', () => commit(number.value));
-        // }
-        if (range && number) {
-            const sync = (value) => {
-                range.value = value;
-                number.value = value;
-            };
-            const commit = (value) => {
-                const clamped = clampPercent(value);
-                sync(clamped);
-                
-                // Відправляємо яскравість напряму в Zigbee2MQTT минаючи HA
-                this._sendDataByGroupName(getGroupNameByNumber(zone, channel), clamped, 'brightness');
-            };
-
-            range.addEventListener('input', () => sync(range.value));
-            range.addEventListener('change', () => commit(range.value));
-            number.addEventListener('change', () => commit(number.value));
-        }
-    }
-
-    // Кастомний ГГ:ХХ ввід (24-годинний формат) замість системного <input type="time">.
-    // Кожен рядок має два текстові поля (години/хвилини) + приховане поле .gh-slot-time,
-    // яке зберігає фінальне значення "HH:MM" — саме його читає _attachTimerListeners при збереженні.
+    // Кастомний ГГ:ХХ ввід (24-годинний формат). Кожен рядок має два текстові
+    // поля (години/хвилини) + приховане поле .gh-slot-time з фінальним "HH:MM" -
+    // саме його читають _collectScenariosFromForm/_attachTimerListeners.
     _attachTimeInputListeners() {
         const rows = this._modalRoot.querySelectorAll('.gh-time-input');
 
@@ -974,7 +1066,6 @@ _attachOfflineBrightnessListeners(zone, channel) {
             const syncHidden = () => {
                 const hh = hhInput.value.trim();
                 const mm = mmInput.value.trim();
-                // Час валідний лише якщо заповнені обидва поля — інакше рядок вважається порожнім
                 hiddenInput.value = (hh !== '' && mm !== '')
                     ? `${hh.padStart(2, '0')}:${mm.padStart(2, '0')}`
                     : '';
@@ -990,7 +1081,6 @@ _attachOfflineBrightnessListeners(zone, channel) {
             hhInput.addEventListener('input', () => {
                 hhInput.value = hhInput.value.replace(/\D/g, '').slice(0, 2);
                 syncHidden();
-                // Автоперехід на хвилини, коли години введені повністю (2 цифри)
                 if (hhInput.value.length === 2) {
                     mmInput.focus();
                     mmInput.select();
@@ -1010,7 +1100,6 @@ _attachOfflineBrightnessListeners(zone, channel) {
                 syncHidden();
             });
 
-            // Backspace у порожньому полі хвилин повертає фокус на години
             mmInput.addEventListener('keydown', (e) => {
                 if (e.key === 'Backspace' && mmInput.value === '') {
                     hhInput.focus();
@@ -1019,393 +1108,145 @@ _attachOfflineBrightnessListeners(zone, channel) {
         });
     }
 
+    _collectScenariosFromForm() {
+        const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
+        const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
+
+        const scenarios = [];
+        timeInputs.forEach((timeInput, idx) => {
+            const time = timeInput.value;
+            if (!time) return; // порожній час -> рядок не використовується
+            const percentRaw = percentInputs[idx].value;
+            scenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
+        });
+        return scenarios;
+    }
+
+    // Заповнює вже відрендерені поля форми значеннями з масиву (вставка з буфера) -
+    // без перебудови DOM, щоб не втратити фокус/скрол.
+    _populateTimerRows(scenarios) {
+        const hhInputs = this._modalRoot.querySelectorAll('.gh-time-hh');
+        const mmInputs = this._modalRoot.querySelectorAll('.gh-time-mm');
+        const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
+        const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
+
+        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
+            const entry = scenarios[idx] || {};
+            const time = entry.time || '';
+            const brightness = entry.brightness !== undefined ? entry.brightness : '';
+            const [hh, mm] = time.split(':');
+
+            if (hhInputs[idx]) hhInputs[idx].value = hh || '';
+            if (mmInputs[idx]) mmInputs[idx].value = mm || '';
+            if (timeInputs[idx]) timeInputs[idx].value = time;
+            if (percentInputs[idx]) percentInputs[idx].value = brightness;
+        }
+    }
+
+    _flashButtonText(btn, text, restoreText, delayMs = 1500) {
+        if (!btn) return;
+        btn.innerText = text;
+        setTimeout(() => {
+            if (btn) btn.innerText = restoreText;
+        }, delayMs);
+    }
+
     _attachTimerListeners(zone, channel) {
         this._attachTimeInputListeners();
 
         const saveBtn = this._modalRoot.querySelector('#gh-save-scenarios');
-        if (!saveBtn) return;
+        const copyBtn = this._modalRoot.querySelector('#gh-copy-scenarios');
+        const pasteBtn = this._modalRoot.querySelector('#gh-paste-scenarios');
 
-        saveBtn.addEventListener('click', () => {
-            const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
-            const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
+        if (saveBtn) {
+            saveBtn.addEventListener('click', () => {
+                const scenarios = this._collectScenariosFromForm();
+                this._publishSet(zone, channel, { scenarios });
 
-            const scenarios = [];
-            timeInputs.forEach((timeInput, idx) => {
-                const time = timeInput.value;
-                const percentRaw = percentInputs[idx].value;
+                const cfg = this._getChannelState(zone, channel);
+                this._channelState[groupName(zone, channel)] = { ...cfg, scenarios };
 
-                // Порожній час -> рядок вважається невикористаним, пропускається
-                if (!time) return;
-
-                scenarios.push({
-                    time,
-                    brightness: clampPercent(percentRaw === '' ? 0 : percentRaw),
-                });
+                this._flashButtonText(saveBtn, 'Збережено ✓', 'Зберегти розклад');
             });
+        }
 
-            this._hass.callService('text', 'set_value', {
-                entity_id: scenariosEntity(zone, channel),
-                value: JSON.stringify(scenarios),
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => {
+                const scenarios = this._collectScenariosFromForm();
+                localStorage.setItem(SCENARIO_CLIPBOARD_KEY, JSON.stringify(scenarios));
+                this._flashButtonText(copyBtn, 'Скопійовано ✓', 'Копіювати розклад');
             });
+        }
 
-            saveBtn.innerText = 'Збережено ✓';
-            setTimeout(() => {
-                if (saveBtn) saveBtn.innerText = 'Зберегти розклад';
-            }, 1500);
-        
-            this._sendDataByGroupName(`Zone_${zone}_Channel_${channel}`, JSON.stringify(scenarios), `scenarios`)
-
-        });
+        if (pasteBtn) {
+            pasteBtn.addEventListener('click', () => {
+                const raw = localStorage.getItem(SCENARIO_CLIPBOARD_KEY);
+                if (!raw) {
+                    this._flashButtonText(pasteBtn, 'Буфер порожній', 'Вставити розклад');
+                    return;
+                }
+                const scenarios = safeParseScenarios(raw);
+                this._populateTimerRows(scenarios);
+                // Свідомо НЕ публікуємо одразу - користувач бачить вставлені
+                // значення у формі й підтверджує окремим "Зберегти розклад".
+                this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити розклад', 2000);
+            });
+        }
     }
 
     // -------------------------------------------------------------------
-    // Оновлення "живих" значень у вже відкритому модальному вікні
-    // (наприклад, коли hass.states оновились самостійно від пристрою)
+    // Оновлення "живих" значень у вже відкритому модальному вікні.
+    // Пілюлі режиму (зона-рівень) і поля активного каналу оновлюються з
+    // MQTT автоматично; редактор таймера НАЖИВО не чіпаємо навмисно, щоб
+    // не затерти незбережений чернетковий розклад користувача.
     // -------------------------------------------------------------------
     _refreshModalLiveValues() {
-        // Свідомо не перерендерюємо форму цілком під час введення (це б скидало
-        // фокус/курсор користувача) — повне оновлення відбувається лише при
-        // зміні режиму/вкладки. Живий стан плиток зон оновлюється окремо
-        // в _updateZoneStatuses(), що покриває основний випадок використання.
+        if (!this._modalState || !this._modalState.open || !this._modalRoot) return;
+        this._renderModeRow();
+        this._refreshChannelSpecificValues();
     }
 
-    // Стосується логіки з MQTT 
-    _getGroupMembersByGroupName(groupName) {
+    _refreshChannelSpecificValues() {
+        const { zone, activeChannel } = this._modalState;
+        const zoneMode = this._getChannelState(zone, 1).mode;
+        const cfg = this._getChannelState(zone, activeChannel);
 
-        console.log('group name received: ', groupName);
-        if (!Array.isArray(this._z2mGroups)) {
-            console.warn(`[Greenhouse] Дані з MQTT ще не завантажені! Неможливо знайти "${groupName}".`);
-            return [];
-        }
+        if (zoneMode === 'manual') {
+            const toggleBtn = this._modalRoot.querySelector('#gh-manual-toggle');
+            if (toggleBtn) {
+                const isOn = cfg.state === 'ON';
+                toggleBtn.classList.toggle('on', isOn);
+                toggleBtn.innerText = isOn ? 'Увімкнено' : 'Вимкнено';
+            }
 
-        const targetGroup = this._z2mGroups.find(g => g.friendly_name === groupName);
-
-        if (!targetGroup) {
-            console.warn(`[Greenhouse] Групу "${groupName}" не знайдено в базі Z2M!`);
-            return [];
-        }
-        return (targetGroup.members || []).map(member => member.ieee_address);;
-    }
-
-    // --- МЕТОД ПІДПИСКИ НА MQTT ЧЕРЕЗ WEBSOCKET ---
-    async _subscribeToMqtt() {
-        console.log("Спроба підписки на zigbee2mqtt/bridge/groups...");
-        try {
-            this._unsubMqtt = await this._hass.connection.subscribeMessage(
-                (message) => {
-                    try {
-                        this._z2mGroups = JSON.parse(message.payload);
-                        console.group("Отримано топологію з Z2M!");
-                        console.log("Масив груп готовий до використання в JS");
-                        console.groupEnd();
-                    } catch (e) {
-                        console.error("[Greenhouse] Помилка парсингу JSON з MQTT:", e);
-                    }
-                },
-                {
-                    type: 'mqtt/subscribe',
-                    topic: 'zigbee2mqtt/bridge/groups'
-                }
-            );
-            console.log("✓ [MQTT Direct] Підписку на bridge/groups успішно оформлено!");
-        } catch (err) {
-            console.error("❌ [MQTT Direct] Помилка підписки на bridge/groups:", err);
-            this._mqttSubscribed = false; // Відкриваємо замок, щоб спробувати ще раз при наступному оновленні
-        }
-
-        // --- bridge/devices: потрібен для мапінгу ieee_address -> friendly_name ---
-        console.log("Спроба підписки на zigbee2mqtt/bridge/devices...");
-        try {
-            this._unsubMqttDevices = await this._hass.connection.subscribeMessage(
-                (message) => {
-                    try {
-                        this._z2mDevices = JSON.parse(message.payload);
-                        console.log("[Greenhouse] bridge/devices оновлено, кількість:", this._z2mDevices.length);
-                    } catch (e) {
-                        console.error("[Greenhouse] Помилка парсингу bridge/devices:", e);
-                    }
-                },
-                {
-                    type: 'mqtt/subscribe',
-                    topic: 'zigbee2mqtt/bridge/devices'
-                }
-            );
-            console.log("✓ [MQTT Direct] Підписку на bridge/devices успішно оформлено!");
-        } catch (err) {
-            console.error("❌ [MQTT Direct] Помилка підписки на bridge/devices:", err);
-        }
-
-        // --- zigbee2mqtt/+ : живий кеш ПОВНОГО стану кожного пристрою одним JSON ---
-        // Це той самий блок { boot_status, mode, offline_brightness_l1, scenarios_l1, ... },
-        // який ти бачиш у MQTT Explorer на топіку zigbee2mqtt/<friendly_name>.
-        console.log("Спроба підписки на zigbee2mqtt/+ (стан усіх пристроїв)...");
-        try {
-            this._unsubMqttStates = await this._hass.connection.subscribeMessage(
-                (message) => {
-                    const prefix = 'zigbee2mqtt/';
-                    if (!message.topic.startsWith(prefix)) return;
-
-                    const rest = message.topic.slice(prefix.length);
-                    // Пропускаємо службові підтопіки: bridge/..., .../availability, .../set, .../get тощо —
-                    // нас цікавить ЛИШЕ топік виду "zigbee2mqtt/<friendly_name>" без додаткового "/"
-                    if (rest.includes('/')) return;
-
-                    try {
-                        this._deviceStateCache[rest] = JSON.parse(message.payload);
-                    } catch {
-                        // Не кожен топік з цим префіксом обов'язково JSON — ігноруємо мовчки
-                    }
-                },
-                {
-                    type: 'mqtt/subscribe',
-                    topic: 'zigbee2mqtt/+'
-                }
-            );
-            console.log("Підписку на zigbee2mqtt/+ успішно оформлено!");
-        } catch (err) {
-            console.error("Помилка підписки на zigbee2mqtt/+:", err);
-        }
-    }
-
-    // Повертає масив friendly_name реальних пристроїв — членів групи
-    _getGroupMemberFriendlyNames(groupName) {
-        const ieeeList = this._getGroupMembersByGroupName(groupName);
-        if (!Array.isArray(this._z2mDevices) || this._z2mDevices.length === 0) {
-            console.warn('[Greenhouse] bridge/devices ще не завантажено — friendly_name недоступні.');
-            return [];
-        }
-
-        return ieeeList
-            .map((ieee) => {
-                const dev = this._z2mDevices.find((d) => d.ieee_address === ieee);
-                if (!dev) {
-                    console.warn(`[Greenhouse] Пристрій з ieee_address ${ieee} не знайдено в bridge/devices.`);
-                    return null;
-                }
-                return dev.friendly_name;
-            })
-            .filter(Boolean);
-    }
-
-    // Дістає конкретне поле з живого MQTT-кешу за 3-рівневим пріоритетом:
-    // 1. Кеш самої ГРУПИ (для спільних команд, як-от scenarios, offline_brightness).
-    // 2. Кеш конкретних ПРИСТРОЇВ-членів (для системних команд, як-от mode).
-    // 3. Fallback-значення за замовчуванням.
-    _getFieldFromZoneChannel(zone, channel, field, fallback) {
-        const groupName = `Zone_${zone}_Channel_${channel}`;
-
-        // --- Перевіряємо кеш самої групи ---
-        const groupState = this._deviceStateCache[groupName];
-        if (groupState) {
-            // У кеші групи поля (scenarios, offline_brightness) зазвичай лежать БЕЗ суфікса каналу (_l1, _l2).
-            // Тому прибираємо суфікс _lX за допомогою регулярки, але про всяк випадок перевіряємо обидва варіанти:
-            const cleanField = field.replace(/_l\d+$/i, '');
-            const groupVal = groupState[field] ?? groupState[cleanField];
-
-            if (groupVal !== undefined && groupVal !== null) {
-                console.log(`[Greenhouse] ✓ Прочитано "${cleanField}" =`, groupVal, `з кешу ГРУПИ "${groupName}"`);
-                return groupVal;
+            const range = this._modalRoot.querySelector('#gh-manual-range');
+            const number = this._modalRoot.querySelector('#gh-manual-number');
+            if (range && number && document.activeElement !== range && document.activeElement !== number) {
+                range.value = cfg.brightness;
+                number.value = cfg.brightness;
             }
         }
-
-        // --- Якщо в групі немає, перевіряємо індивідуальні пристрої-члени ---
-        const names = this._getGroupMemberFriendlyNames(groupName);
-        for (const name of names) {
-            const state = this._deviceStateCache[name];
-            if (state && state[field] !== undefined && state[field] !== null) {
-                console.log(`[Greenhouse] ✓ Прочитано "${field}" =`, state[field], `з пристрою "${name}"`);
-                return state[field];
-            }
-        }
-
-        // --- Fallback ---
-        console.log(`[Greenhouse] ⚠️ Поле "${field}" не знайдено ні в групі "${groupName}", ні в пристроях. Fallback:`, fallback);
-        return fallback;
     }
 
-    // --- 4. ОЧИЩЕННЯ ПРИ ВИДАЛЕННІ КАРТКИ З ЕКРАНА ---
+    // -------------------------------------------------------------------
     disconnectedCallback() {
         if (this._unsubMqtt) {
             this._unsubMqtt();
             this._unsubMqtt = null;
         }
-        if (this._unsubMqttDevices) {
-            this._unsubMqttDevices();
-            this._unsubMqttDevices = null;
-        }
-        if (this._unsubMqttStates) {
-            this._unsubMqttStates();
-            this._unsubMqttStates = null;
+        if (this._unsubBridgeRequest) {
+            this._unsubBridgeRequest();
+            this._unsubBridgeRequest = null;
         }
         this._mqttSubscribed = false;
     }
-
-
-    handleMqttResponse(payloadString) {
-    try {
-        const data = JSON.parse(payloadString);
-        // Тут ви отримуєте чистий масив об'єктів груп
-        console.log("Отримані групи Z2M:", data); 
-        
-        // Збережіть дані в стейт картки та запустіть рендер
-        this.z2mGroups = data; 
-        this.requestUpdate(); // Якщо використовуєте LitElement
-    } catch (e) {
-        console.error("Помилка парсингу JSON з MQTT", e);
-    }
-    }
-        
-        /**
-     *  Метод для відправки даних на пристрій за його IEEE-адресою
-     * @param {string} ieeeAddress - MAC-адреса плати (напр. "0x4831b7fffecf3772")
-     * @param {Object} payload - Об'єкт з даними для відправки (напр. { brightness_l1: 100 })
-     * @param {string} topicSuffix - Суфікс топіка: '/set' (команда) або '/get' (запит)
-     */
-    async _sendDataByIEEE(ieeeAddress, payload, topicSuffix = '/set') {
-        if (!this._hass) {
-            console.error('[Greenhouse] Неможливо відправити MQTT: this._hass не ініціалізовано!');
-            return;
-        }
-
-        if (!ieeeAddress) {
-            console.error('[Greenhouse] IEEE-адреса не вказана!');
-            return;
-        }
-
-        // Формуємо повний MQTT-топік (наприклад: "zigbee2mqtt/0x4831b7fffecf3772/set")
-        const fullTopic = `zigbee2mqtt/${ieeeAddress}${topicSuffix}`;
-
-        // Якщо payload передано як об'єкт — перетворюємо на JSON-рядок
-        const payloadString = typeof payload === 'object' ? JSON.stringify(payload) : String(payload);
-
-        console.log(`📡 [MQTT Publish] -> Топік: "${fullTopic}" | Пейлоад:`, payloadString);
-
-        try {
-            // 3. Викливаємо системний сервіс Home Assistant для публікації в MQTT
-            await this._hass.callService('mqtt', 'publish', {
-                topic: fullTopic,
-                payload: payloadString
-            });
-            console.log(`✓ [MQTT Publish] Успішно відправлено на ${ieeeAddress}`);
-        } catch (error) {
-            console.error(`❌ [MQTT Publish] Помилка відправки на ${ieeeAddress}:`, error);
-        }
-    }
-
-/**
-     * Експериментальний метод для прямої відправки даних у топік групи Z2M.
-     * Оминає ітерацію по пристроях і змушує Z2M записати стан у кеш групи (state.json).
-     * @param {string} groupName - Назва групи (напр. "Zone_1_Channel_2")
-     * @param {any} payload - Значення для відправки
-     * @param {string} type - Тип: 'scenarios', 'offline_brightness', 'mode', 'state', 'brightness' або 'raw'
-     */
-    async _testSendingDirectlyToGroup(groupName, payload, type = 'raw') {
-        if (!this._hass) {
-            console.error('❌ [Greenhouse] Неможливо відправити в групу: this._hass не ініціалізовано!');
-            return false;
-        }
-
-        if (!groupName) {
-            console.error('❌ [Greenhouse] Назва групи не вказана!');
-            return false;
-        }
-
-        const fullTopic = `zigbee2mqtt/${groupName}/set`;
-        console.group(`🧪 [Direct Group Send] -> Група: "${groupName}" | Тип: [${type}]`);
-
-        let formattedPayload;
-
-        if (type === 'raw') {
-            // Якщо передали готовий об'єкт (напр. { state: 'ON', brightness: 100 })
-            formattedPayload = typeof payload === 'object' ? payload : { raw: payload };
-        } else {
-            // ВАЖЛИВО: Для групи ми НІКОЛИ не додаємо суфікс каналу (_l1, _l2 тощо)!
-            // Конвертер Z2M чекає чисті ключі: "scenarios", "offline_brightness", "mode"
-            formattedPayload = {
-                [type]: payload
-            };
-        }
-
-        const payloadString = JSON.stringify(formattedPayload);
-        console.log(`📡 Топік: "${fullTopic}" | Пейлоад:`, payloadString);
-
-        try {
-            await this._hass.callService('mqtt', 'publish', {
-                topic: fullTopic,
-                payload: payloadString
-            });
-            console.log(`✓ [Direct Group Send] Успішно відправлено в топік групи "${groupName}"!`);
-            console.groupEnd();
-            return true;
-        } catch (error) {
-            console.error(`❌ [Direct Group Send] Помилка відправки в групу "${groupName}":`, error);
-            console.groupEnd();
-            return false;
-        }
-    }
-    /**
-     * Диспетчер відправки даних на групу
-     * @param {string} groupName - Назва групи (напр. "Zone_1_Channel_1")
-     * @param {any} payload - Значення (масив розкладу, число, рядок або об'єкт)
-     * @param {string} type - Тип команди: 'scenarios', 'offline_brightness', 'mode', 'manual' або 'raw'
-     * @param {number} delayMs - Затримка між відправками (мс)
-     */
-    async _sendDataByGroupName(groupName, payload, type = 'raw', delayMs = 250) {
-
-        if (type == 'scenarios' || type == 'offline_brightness' || type == 'brightness' || type == 'state'){
-            this._testSendingDirectlyToGroup(groupName, payload, type)
-            return;
-        }
-
-        const ieeeList = this._getGroupMembersByGroupName(groupName);
-
-        if (!ieeeList || ieeeList.length === 0) {
-            console.warn(`⚠️ [Greenhouse] Група "${groupName}" порожня або не знайдена в базі Z2M!`);
-            return;
-        }
-
-        const channelMatch = groupName.match(/channel_(\d+)/i);
-        const channel = channelMatch ? Number(channelMatch[1]) : 1;
-
-        console.group(`🚀 [Group Send] Група: "${groupName}" | Тип: [${type}] | Канал: l${channel}`);
-
-        // ВАЖЛИВО: mode (і будь-які інші майбутні системні поля типу boot_status,
-        // device_time) НЕ мають суфікса каналу — це властивості всього пристрою (EP2),
-        // а не конкретного каналу. offline_brightness/scenarios — навпаки, завжди per-channel.
-        const DEVICE_LEVEL_TYPES = ['mode', 'boot_status', 'device_time'];
-        const payloadKey = DEVICE_LEVEL_TYPES.includes(type) ? type : `${type}_l${channel}`;
-
-        const formattedPayload = {
-            [payloadKey]: payload
-        };
-
-        console.log(formattedPayload);
-
-        for (let i = 0; i < ieeeList.length; i++) {
-            const mac = ieeeList[i];
-            console.log(`[${i + 1}/${ieeeList.length}] Надсилання на MAC: ${mac}`);
-
-            await this._sendDataByIEEE(mac, formattedPayload, "/set");
-
-            if (i < ieeeList.length - 1 && delayMs > 0) {
-                await new Promise(resolve => setTimeout(resolve, delayMs));
-            }
-        }
-
-        console.log(`✓ [Group Send] Завершено!`);
-        console.groupEnd();
-    }
-
-
 }
 
 window.customCards = window.customCards || [];
 window.customCards.push({
     type: 'greenhouse-zone-card',
     name: 'GreenHouse Zone',
-    description: 'Велика плитка керування зонами',
+    description: 'Велика плитка керування зонами через LogicService',
 });
-
-
 
 customElements.define('greenhouse-zone-card', GreenhouseZoneCard);

@@ -27,6 +27,9 @@ const CHANNEL_CLUSTER = 0xFC01; // Кастомний кластер offline_bri
 const MAX_SCENARIOS = 12;
 const BYTES_PER_SCENARIO = 3;
 
+const LOGIC_SERVICE_PREFIX = 'LogicService'; // Окремий канал для картки, не плутати з zigbee2mqtt/bridge/*
+const HEARTBEAT_TIMEOUT_MS = 100_000; // Пінг очікується раз на 50-70с, тому 100с - запас на один пропущений цикл
+
 const now = new Date();
 // Ті самі функції пакування, що і в external converter — тримати їх синхронізованими,
 // або перенести в спільний модуль, якщо логіка почне розростатись.
@@ -49,11 +52,17 @@ function encodeScenarios(scenarios) {
 
 class AutoGrouper {
     // Нам знадобиться об'єкт state, щоб читати поточний стан пристрою
-    constructor(zigbee, mqtt, state, _4, eventBus) {
+    constructor(zigbee, mqtt, state, publishEntityState, eventBus, enableDisableExtension, restartCallback, addExtension, settings, logger) {
         this.zigbee = zigbee;
         this.mqtt = mqtt;
         this.eventBus = eventBus;
         this.state = state;
+
+        // Стан heartbeat-моніторингу тримається окремо від груп/каналів
+        this.deviceZones = new Map();        // ieeeAddr -> номер зони, кешується один раз при налаштуванні
+        this.zoneLookupInFlight = new Map(); // ieeeAddr -> Promise, захищає від паралельних read() при частих пінгах
+        this.heartbeatTimers = new Map();    // ieeeAddr -> handle таймера очікування наступного пінгу
+        this.deviceOnlineState = new Map();  // ieeeAddr -> 'online' | 'offline', заповнюється лише після першої події
     }
 
     start() {
@@ -63,11 +72,41 @@ class AutoGrouper {
         this.eventBus.onDeviceJoined(this, this.onDeviceJoined.bind(this));
 
         this.eventBus.onStateChange(this, this.onStateChange.bind(this));
-        //this.eventBus.onDeviceLeave(this, this.onDeviceLeave.bind(this));
+
+        // Grace-таймери озброюються для всіх вже відомих пристроїв одразу при старті/рестарті
+        // розширення. Без цього кроку плата, що замовкла ще ДО рестарту, ніколи не отримає
+        // свій перший пінг і її offline-таймер просто ніколи не буде запущено - вона застрягне
+        // у невизначеному стані замість того, щоб бути позначеною офлайн протягом 100с.
+        this._armGraceTimersForKnownDevices();
+
+        // Створення інтервалу на 12 годин (12 * 60 * 60 * 1000 = 43200000 мс)
+        // const TWELVE_HOURS_MS = 1000*60;
+        // this.syncInterval = setInterval(() => {
+        //     this.syncronizationOfGroupsHalfOfDay().catch((err) => {
+        //         console.error(`🌿 [AutoGrouper] ❌ Помилка у фоновому таймері: ${err.message}`);
+        //     });
+        // }, TWELVE_HOURS_MS);
+        
+        // console.log('🌿 [AutoGrouper] Таймер періодичної синхронізації (12h) запущено.');
+        
     }
 
     stop() {
         this.eventBus.removeListeners(this);
+        
+        // Очищення таймера при зупинці розширення
+        if (this.syncInterval) {
+            clearInterval(this.syncInterval);
+            this.syncInterval = null;
+        }
+
+        // Усі heartbeat-таймери прибираються, інакше вони спрацюють у "порожнечу"
+        // вже після зупинки розширення (посилання на стару this-обгортку залишиться в пам'яті)
+        for (const timer of this.heartbeatTimers.values()) {
+            clearTimeout(timer);
+        }
+        this.heartbeatTimers.clear();
+        
         console.log('🌿 [AutoGrouper] STOPPED.');
     }
 
@@ -88,30 +127,169 @@ class AutoGrouper {
         console.log(`🌿 [AutoGrouper] Процес налаштування пристрою ${data.device} запущено.`);
     }
 
-    // Перевірка bootMode
+// Обробка змін стану пристроїв
     async onStateChange(data) {
-        // data містить: { entity (об'єкт пристрою/групи), from (старий стан), to (новий стан) }
+        // data містить: { entity (об'єкт пристрою/групи), from (старий стан), to (новий стан), update (змінені поля) }
         
         if (!data.entity || data.entity.isGroup()) return;
 
-        // Приклад: ловимо зміну нашого boot_status
-        const newBootStatus = data.to?.boot_status;
-        const oldBootStatus = data.from?.boot_status;
-        
-        const basicEndpoint = data.entity.zh.getEndpoint(1);
-        const result = await basicEndpoint.read('genBasic', ['productLabel']);
-        
-        if (data.update && data.update.boot_status === 0) {
-            console.log(`\n🌿 Отримано boot_status = 0 від ${data.entity.name}!`);
-            
-            this.setupDevicesInBackground(data.entity).catch((err) => {
-                console.error(`🌿 [AutoGrouper] Device configuration failure (via update): ${err.message}`);
-            });
+        // Пінг (серцебиття) ловиться тут - мікроконтролером надсилається 2, очікується підтвердження зв'язку
+        if (data.update && data.update.boot_status === 2) {
+            await this._handleHeartbeatPing(data.entity);
+            return; // більше нічого не обробляється в цій події
+        }
+    }
 
-            
-            return; 
+    /**
+     * Обробляється кожен вхідний пінг від пристрою.
+     * Понг надсилається негайно. Паралельно перезапускається персональний
+     * таймер очікування наступного пінгу - якщо новий пінг не прийде за
+     * HEARTBEAT_TIMEOUT_MS, пристрій вважається офлайн.
+     * Якщо пристрій до цього вважався офлайн - надсилається сповіщення
+     * про повернення в LogicService/bridge/request.
+     */
+    async _handleHeartbeatPing(device) {
+        const ieeeAddr = device.ieeeAddr;
+
+        console.log(`🌿 [Heartbeat] Пінг отримано від ${device.name}. Понг надсилається...`);
+
+        // Понг надсилається через внутрішню шину MQTT, минаючи зовнішній брокер напряму -
+        // повідомлення проходить через tz-конвертер і безпечно записується в ESP32
+        this.eventBus.emitMQTTMessage({
+            topic: `zigbee2mqtt/${device.name}/set`,
+            message: JSON.stringify({ boot_status: 1 }),
+        });
+
+        // Попередній таймер очікування скасовується і озброюється новий
+        const existingTimer = this.heartbeatTimers.get(ieeeAddr);
+        if (existingTimer) clearTimeout(existingTimer);
+
+        const timer = setTimeout(() => {
+            this._markDeviceOffline(device).catch((err) => {
+                console.error(`🌿 [Heartbeat] Помилка позначення "${device.name}" офлайн: ${err.message}`);
+            });
+        }, HEARTBEAT_TIMEOUT_MS);
+        this.heartbeatTimers.set(ieeeAddr, timer);
+
+        // Сповіщення про повернення в мережу надсилається лише при переході
+        // зі стану 'offline' - на звичайних регулярних пінгах нічого не публікується,
+        // щоб не спамити картку однаковими подіями кожні 50-70с
+        const wasOffline = this.deviceOnlineState.get(ieeeAddr) === 'offline';
+        this.deviceOnlineState.set(ieeeAddr, 'online');
+
+        if (wasOffline) {
+            const zone = await this._resolveZone(device);
+            console.log(`🌿 [Heartbeat] "${device.name}" повернувся в мережу (зона ${zone}).`);
+            this._publishDeviceStatus(zone, device.name, 'online');
+        }
+    }
+
+    /**
+     * Викликається таймером, коли новий пінг не прийшов вчасно.
+     * Подвійне спрацювання блокується перевіркою поточного стану.
+     */
+    async _markDeviceOffline(device) {
+        const ieeeAddr = device.ieeeAddr;
+
+        if (this.deviceOnlineState.get(ieeeAddr) === 'offline') return;
+
+        this.deviceOnlineState.set(ieeeAddr, 'offline');
+        this.heartbeatTimers.delete(ieeeAddr);
+
+        const zone = await this._resolveZone(device);
+        console.warn(`🌿 [Heartbeat] Пінг від "${device.name}" не отримано за ${HEARTBEAT_TIMEOUT_MS / 1000}с - позначається офлайн (зона ${zone}).`);
+        this._publishDeviceStatus(zone, device.name, 'offline');
+    }
+
+    /**
+     * Публікується сповіщення про статус пристрою в окремий канал картки.
+     * Топік НЕ перетинається з внутрішнім zigbee2mqtt/bridge/* API самого Z2M.
+     */
+    _publishDeviceStatus(zone, deviceName, status) {
+        this.eventBus.emitMQTTMessage({
+            topic: `${LOGIC_SERVICE_PREFIX}/bridge/request`,
+            message: JSON.stringify({ zone, device: deviceName, status }),
+        });
+    }
+
+    /**
+     * Номер зони визначається з кешу, заповненого під час onDeviceInterview/setupDevicesInBackground.
+     * Якщо кешу ще немає (наприклад, перший пінг долетів раніше фонового налаштування,
+     * або розширення було перезапущене без повторного інтерв'ю пристрою) - зона читається
+     * напряму з пристрою через ту саму атрибуту productLabel, що й при первинному налаштуванні.
+     * Паралельні виклики для одного пристрою дедуплікуються через zoneLookupInFlight.
+     */
+    async _resolveZone(device) {
+        const ieeeAddr = device.ieeeAddr;
+
+        if (this.deviceZones.has(ieeeAddr)) {
+            return this.deviceZones.get(ieeeAddr);
         }
 
+        if (this.zoneLookupInFlight.has(ieeeAddr)) {
+            return this.zoneLookupInFlight.get(ieeeAddr);
+        }
+
+        const lookupPromise = (async () => {
+            try {
+                const basicEndpoint = device.zh.getEndpoint(1);
+                if (!basicEndpoint) return null;
+
+                const result = await basicEndpoint.read('genBasic', ['productLabel']);
+                const zone = Number(result?.productLabel);
+                if (isNaN(zone)) return null;
+
+                this.deviceZones.set(ieeeAddr, zone);
+                return zone;
+            } catch (error) {
+                console.error(`🌿 [Heartbeat] Зону для "${device.name}" визначити не вдалось: ${error.message}`);
+                return null;
+            } finally {
+                this.zoneLookupInFlight.delete(ieeeAddr);
+            }
+        })();
+
+        this.zoneLookupInFlight.set(ieeeAddr, lookupPromise);
+        return lookupPromise;
+    }
+
+    /**
+     * При старті (чи рестарті) розширення для кожного вже відомого сумісного пристрою
+     * озброюється стартовий таймер очікування. Пінг від пристрою, якщо він живий,
+     * скасує цей таймер і замінить його звичайним rolling-таймером у _handleHeartbeatPing.
+     * Якщо пристрій мовчав ще до рестарту - через HEARTBEAT_TIMEOUT_MS він коректно
+     * позначиться офлайн, а не зависне у невизначеному стані назавжди.
+     */
+    _armGraceTimersForKnownDevices() {
+        let devices = [];
+
+        if (typeof this.zigbee.getClients === 'function') {
+            devices = this.zigbee.getClients();
+        } else if (typeof this.zigbee.devices === 'function') {
+            devices = this.zigbee.devices();
+        } else if (this.zigbee.devices && typeof this.zigbee.devices === 'object') {
+            devices = Object.values(this.zigbee.devices);
+        } else {
+            console.error('🌿 [Heartbeat] Спосіб отримання списку пристроїв у цій версії Z2M не знайдено - стартові таймери не озброєні.');
+            return;
+        }
+
+        let armedCount = 0;
+        for (const device of devices) {
+            if (!device || !device.zh || device.zh.type === 'Coordinator') continue;
+            if (!device.zh.getEndpoint(2)) continue; // системного ендпоінта немає - пристрій не наш
+
+            const timer = setTimeout(() => {
+                this._markDeviceOffline(device).catch((err) => {
+                    console.error(`🌿 [Heartbeat] Помилка стартової перевірки "${device.name}": ${err.message}`);
+                });
+            }, HEARTBEAT_TIMEOUT_MS);
+
+            this.heartbeatTimers.set(device.ieeeAddr, timer);
+            armedCount++;
+        }
+
+        console.log(`🌿 [Heartbeat] Стартові таймери озброєно для ${armedCount} пристроїв.`);
     }
 
     // Вся логіка з MQTT винесена в окремий фоновий метод
@@ -133,6 +311,10 @@ async setupDevicesInBackground(device) {
         }
 
         if (!myLabel || isNaN(Number(myLabel))) return;
+
+        // Зона кешується одразу - подальші пінги від цього пристрою більше не
+        // потребуватимуть окремого Zigbee-читання productLabel у _resolveZone()
+        this.deviceZones.set(device.ieeeAddr, Number(myLabel));
 
         const deviceFriendlyName = device.name;
 
@@ -357,6 +539,7 @@ async ensureGroupExists(groupName, group_ID) {
         
         if (existingGroup && existingGroup.isGroup && existingGroup.isGroup()) {
             console.log(`🌿 [AutoGrouper-BG] Група "${groupName}" (ID: ${group_ID}) вже існує в базі Z2M.`);
+            this.enableGroupRetain(group_ID);
             return true;
         }
 
@@ -386,12 +569,32 @@ async ensureGroupExists(groupName, group_ID) {
 
         if (response?.status === 'ok') {
             console.log(`🌿 [AutoGrouper-BG] Групу "${groupName}" створено вперше.`);
+            this.enableGroupRetain(group_ID);
             return false;
         }
 
         // Страховка на випадок колізії, якщо група була створена кимось паралельно
         console.log(`🌿 [AutoGrouper-BG] Відповідь бриджа: ${response?.status ?? 'timeout'}.`);
         return true;
+    }
+
+
+
+    /**
+     * Програмно вмикає retain для групи через MQTT API Zigbee2MQTT
+     */
+    enableGroupRetain(group_ID) {
+        console.log(`🌿 [AutoGrouper-BG] Відправка запиту на увімкнення retain для групи ID: ${group_ID}...`);
+
+        this.eventBus.emitMQTTMessage({
+            topic: 'zigbee2mqtt/bridge/request/group/options',
+            message: JSON.stringify({
+                id: group_ID,
+                options: {
+                    retain: true
+                }
+            }),
+        });
     }
 
     /**
@@ -426,6 +629,63 @@ async ensureGroupExists(groupName, group_ID) {
             setTimeout(() => finish(null), timeoutMs);
         });
     }
+
+    /**
+     * Періодична синхронізація: надсилає boot_status = 0 всім сумісним пристроям
+     * із паузою між ними, щоб уникнути перевантаження мережі (Zigbee Storm).
+     */
+/**
+     * Періодична синхронізація: надсилає boot_status = 0 всім сумісним пристроям
+     */
+    async syncronizationOfGroupsHalfOfDay() {
+
+        let a = this.state.getAllDevices();
+        console.log(`\n\n\n\n\n\n this.state.getAllDevices:\n ${a} \n\n\n\n\n`);
+        console.log('\n🌿 [AutoGrouper] === Запуск періодичної синхронізації (відправка boot_status = 0) ===');
+
+        // Правильний спосіб отримання пристроїв з API Zigbee2MQTT
+        let devices = [];
+        
+        if (typeof this.zigbee.getClients === 'function') {
+            devices = this.zigbee.getClients();
+        } else if (typeof this.zigbee.devices === 'function') {
+            devices = this.zigbee.devices();
+        } else if (this.zigbee.devices && typeof this.zigbee.devices === 'object') {
+            devices = Object.values(this.zigbee.devices);
+        } else {
+            console.error('🌿 [AutoGrouper] ❌ Не вдалося знайти метод Z2M для отримання списку пристроїв!');
+            return;
+        }
+
+        if (devices.length === 0) {
+            console.warn('🌿 [AutoGrouper] ⚠️ Масив пристроїв порожній. Жодного пристрою не знайдено.');
+        }
+
+        for (const device of devices) {
+            // Пропускаємо координатор та сутності, які не мають zigbee-herdsman об'єкта (zh)
+            if (!device || !device.zh || device.zh.type === 'Coordinator') continue;
+
+            // Шукаємо системний ендпоінт 2, як у твоєму коді
+            const systemEndpoint = device.zh.getEndpoint(2);
+            if (!systemEndpoint) continue;
+
+            try {
+                console.log(`🌿 [AutoGrouper] Відправка boot_status = 0 пристрою: ${device.name}`);
+                
+                // Записуємо 0 точнісінько так само, як ти записуєш 1 у своєму коді
+                await systemEndpoint.write(0xFF01, { 0x0000: { value: 0, type: 0x20 } });
+                
+                // Пауза 5 секунд, щоб не створити Zigbee шторм
+                await new Promise((resolve) => setTimeout(resolve, 5000));
+
+            } catch (error) {
+                console.error(`🌿 [AutoGrouper] ❌ Помилка запису boot_status для ${device.name}: ${error.message}`);
+            }
+        }
+
+        console.log('🌿 [AutoGrouper] === Періодичну синхронізацію завершено ===\n');
+    }
+
 }
 
-module.exports = AutoGrouper;   
+module.exports = AutoGrouper;
