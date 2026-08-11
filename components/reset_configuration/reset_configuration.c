@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "esp_zigbee_core.h"
 #include "dip_switch.h"
+#include "endpoint_config.h"
 // #include "esp_zigbee_zdo_command.h"
 
 static bool reset_configuration_initialized = false;
@@ -50,6 +51,9 @@ static void button_single_click_cb(void *arg, void *usr_data)
         esp_zb_factory_reset(); 
     } else {
         ESP_LOGI(TAG, "Пристрій працює у звичайному режимі (скидання не активовано).");
+
+        printf("\n Число бут статусу: %d\n", get_boot_status());
+
     }
 }
 

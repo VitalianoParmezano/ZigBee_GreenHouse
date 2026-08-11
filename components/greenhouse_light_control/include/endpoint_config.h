@@ -5,6 +5,8 @@
 extern "C" {
 #endif
 
+uint8_t get_boot_status(void);
+
 #define NUMBER_OF_CHANNEL_ENDPOINTS 3 // Кількість ендпоінтів для каналів 
 
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list);

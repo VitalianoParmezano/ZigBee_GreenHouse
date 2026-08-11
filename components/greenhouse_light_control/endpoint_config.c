@@ -14,6 +14,10 @@ static uint8_t boot_status = 0;       // Атрибут 0x0000: Статус з�
 static const char *TAG = "ENDPOINT_CONFIG"; 
 // Зсув номерів ендпоінтів каналів
 
+uint8_t get_boot_status() {
+    return boot_status;
+}
+
 void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
 {
     //  Готуємо дані (Pascal strings - перший байт довжина)

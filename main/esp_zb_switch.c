@@ -11,6 +11,8 @@
 #include "freertos/task.h"            // Бібліотека для роботи з потоками (задачами) у FreeRTOS
 #include "esp_zigbee_core.h"          // Основна бібліотека стека Zigbee від Espressif
 
+#include "heart_beat.h"              // Обробка сигналу Heart Beat
+
 
 
 static const char *TAG = "Light_Router"; 
@@ -84,6 +86,17 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 int channel = attr_msg->info.dst_endpoint % 10; // Використовуємо номер ендпоінту як канал для Modbus
                 modbus_send_brightness_to_channel(level * 10, channel); // Записуємо яскравість у Modbus (для зовнішнього контролю)
             }
+        // Отримання HEART BEAT (Cluster 0xFF01, Attribute 0x0000) сигналу
+        } else if(attr_msg->info.dst_endpoint == 2 && attr_msg->attribute.id == 0x0) {
+            // Обробка атрибута Heart Beat (Cluster 0xFF01, Attribute 0x0000)
+            uint8_t heart_beat_value = *(uint8_t *)attr_msg->attribute.data.value;
+            //heart_beat_report_status(*(uint8_t *)attr_msg->attribute.data.value);
+            
+            heart_beat_input_value(heart_beat_value);
+        } else {
+            ESP_LOGW(TAG, "Отримано незнайому коменду: ендпоінт %d, кластер 0x%x, атрибут ID 0x%x", 
+                     attr_msg->info.dst_endpoint, attr_msg->info.cluster, attr_msg->attribute.id);
+
         }
     } else {
         ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
@@ -147,6 +160,8 @@ void app_main(void) {
     light_driver_init(); // Ініціалізуємо драйвер світла
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
     modbus_init();
+    heart_beat_init(); // Ініціалізуємо систему серцебиття
+
 
     ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());
     // Створюємо і запускаємо задачу (потік) для Zigbee у FreeRTOS
