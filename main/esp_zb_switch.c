@@ -14,7 +14,10 @@
 
 #include "heart_beat.h"              // Обробка сигналу Heart Beat
 
-
+#include "driver/ledc.h"
+#define PWM_GPIO_NUM       24
+#define PWM_FREQ_HZ        5000 // Частота 5 кГц
+#define PWM_RESOLUTION     LEDC_TIMER_13_BIT
 
 static const char *TAG = "Light_Router"; 
 
@@ -87,7 +90,7 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
                 //int channel = attr_msg->info.dst_endpoint % 10; // Використовуємо номер ендпоінту як канал для Modbus
                 //modbus_send_brightness_to_channel(level * 10, channel); // Записуємо яскравість у Modbus (для зовнішнього контролю)
                 
-                set_level_of_driver_and_strip(level, attr_msg->info.dst_endpoint); // Викликаємо функцію для встановлення рівня яскравості на драйвері та стрічці
+                set_level_of_driver_and_strip(level, attr_msg->info.dst_endpoint%10); // Викликаємо функцію для встановлення рівня яскравості на драйвері та стрічці
             
             }
         // Отримання HEART BEAT (Cluster 0xFF01, Attribute 0x0000) сигналу
@@ -165,6 +168,7 @@ void app_main(void) {
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
     modbus_init();
     heart_beat_init(); // Ініціалізуємо систему серцебиття
+
 
 
     ESP_LOGI(TAG, "\nКонфігурація DIP Switch: 0x%02X\n", dip_switch_get_value());

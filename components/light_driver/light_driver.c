@@ -11,7 +11,7 @@ void set_level_of_driver_and_strip(uint8_t level, uint8_t channel)
     led_strip_set_level(channel, level);
 
     // Відправляємо рівень яскравості на Modbus (для зовнішнього контролю)
-    modbus_send_brightness_to_channel(level * 10, channel%10);
+    modbus_send_brightness_to_channel(level * 100, channel);
 }
 
 void light_driver_set_offline(){
