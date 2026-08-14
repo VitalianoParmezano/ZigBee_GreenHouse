@@ -99,9 +99,20 @@ class SchedulerService:
         mode = cfg["mode"]
 
         if mode == "manual":
-            log.debug("%s: пропуск (mode=manual, керування відбувається одразу через /set)", label)
-            return "skipped"
+            target = cfg.get("brightness", 0)  # Беремо поточну яскравість з конфігу
+            key = (zone, channel)
+            
+            # Якщо потрібно не спамити однаковими повідомленнями, можна розкоментувати:
+            # if self._last_sent.get(key) == target:
+            #     log.debug("%s: без змін (manual %s%%)", label, target)
+            #     return "unchanged"
 
+            log.info("%s: manual -> %s%% (періодичне оновлення стану)", label, target)
+            # Використовуємо існуючий метод для публікації яскравості в MQTT
+            self.state.apply_timer_brightness(zone, channel, target) 
+            self._last_sent[key] = target
+            return "sent"
+        
         if mode == "auto":
             # TODO: авторежим (напр. за освітленістю/датчиками) - поки не реалізовано.
             log.debug("%s: пропуск (mode=auto, ще не реалізовано)", label)
