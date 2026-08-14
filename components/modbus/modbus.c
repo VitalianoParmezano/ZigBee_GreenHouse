@@ -115,6 +115,8 @@ void modbus_init(void) {
 }
 
 void modbus_send_brightness_to_channel(uint16_t brightness, uint8_t channel) {
+
+    printf("Отримано яскравість %d to channel %d via Modbus\n", brightness, channel);
     // if (!master_handle || channel < 1 || channel > 3) return;
     if (brightness > 1000) brightness = 1000;
 

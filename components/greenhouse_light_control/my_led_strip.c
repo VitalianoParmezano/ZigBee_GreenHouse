@@ -40,20 +40,20 @@ void light_driver_init(void){
 
 }
 
-void led_strip_set_level(int endpoint_id, uint8_t brightness)
+void led_strip_set_level(int channel, uint8_t brightness)
 {
-    ESP_LOGI(TAG, "Setting brightness for endpoint %d to %d", endpoint_id, brightness);
+    ESP_LOGI(TAG, "Setting brightness for endpoint %d to %d", channel, brightness);
     
-    // Розподіляємо кольори залежно від номера ендпоінту
-    switch (endpoint_id)
+    // Розподіляємо кольори залежно від номера каналу
+    switch (channel)
     {
-    case 11:
+    case 1:
         s_red = brightness;
         break;
-    case 12:
+    case 2:
         s_green = brightness;
         break;
-    case 13:
+    case 3:
         s_blue = brightness;
         break;
     default:

@@ -17,7 +17,7 @@ void light_driver_init(void);
  * @param endpoint_id ID ендпоінта (1, 2, 3...)
  * @param brightness Яскравість (0-254)
  */
-void led_strip_set_level(int endpoint_id, uint8_t brightness);
+void led_strip_set_level(int channel, uint8_t brightness);
 
 void led_strip_blink_start(void);
 void led_strip_blink_stop(void);
