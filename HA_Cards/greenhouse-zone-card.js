@@ -1,40 +1,26 @@
-/// ---------------------------------------------------------------------------
-// GreenhouseZoneCard - керує зонами/каналами через LogicService (не напряму
-// через zigbee2mqtt і не через HA-сутності). Весь обмін даними - MQTT:
+// GreenhouseZoneCard - зони/канали керуються через LogicService, без прямого
+// звернення до zigbee2mqtt чи HA-сутностей. Обмін даними ведеться через MQTT:
 //
-//   LogicService/Zone_x_Channel_y            <- retained, повний стан каналу
-//                                                (mode, scenarios, brightness, state)
-//   LogicService/Zone_x_Channel_y/set        -> запис (mode/scenarios/brightness)
-//   LogicService/Zone_x_Channel_y/get        -> запит стану (не критичний для
-//                                                картки - retained-топік вище
-//                                                вже дає актуальний стан одразу
-//                                                при підписці)
-//   LogicService/bridge/request              <- сповіщення про online/offline
-//                                                конкретного пристрою:
-//                                                {zone, device, status}
+//   LogicService/Zone_x_Channel_y        <- retained, повний стан каналу
+//                                            (mode, scenarios, brightness, state)
+//   LogicService/Zone_x_Channel_y/set    -> запис (mode/scenarios/brightness)
+//   LogicService/bridge/request          <- online/offline пристрою:
+//                                            {zone, device, status}
 //
-// mode - ОДИН НА ВСЮ ЗОНУ (усі CHANNELS_PER_ZONE каналів мають однаковий
-// режим одночасно). Це UI-рівнева інваріанта: клік по пілюлі режиму
-// публікує {mode: ...} в /set КОЖНОГО каналу зони одразу. scenarios
-// лишається per-channel. Офлайн-режим (offline_brightness) прибрано з
-// системи повністю - картка про нього більше нічого не знає.
+// Режим спільний на всю зону: усі CHANNELS_PER_ZONE каналів синхронізуються
+// одним значенням mode, клік по пілюлі публікує {mode: ...} в /set кожного
+// каналу одразу. Scenarios лишаються per-channel.
 //
-// Синхронізація між картками: КОЖЕН відкритий екземпляр картки (на будь-якому
-// пристрої/вкладці) незалежно підписується на LogicService/+ через
-// hass.connection.subscribeMessage - тому зміна в одній картці (чи навіть
-// напряму з LogicService при спрацюванні таймера) миттєво долітає до всіх
-// інших відкритих карток без жодного опитування/polling.
-// ---------------------------------------------------------------------------
+// Кожен відкритий екземпляр картки незалежно підписується на LogicService/+
+// через hass.connection.subscribeMessage, тому зміна в одному екземплярі
+// долітає до решти без опитування.
 
-const ZONES = 6;
+const ZONES = 8;
 const CHANNELS_PER_ZONE = 3;
 const SCENARIO_SLOTS = 12;
 const CONTROL_PREFIX = 'LogicService';
 const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV1';
 
-// ---------------------------------------------------------------------------
-// Утиліти
-// ---------------------------------------------------------------------------
 function groupName(zone, channel) {
     return `Zone_${zone}_Channel_${channel}`;
 }
@@ -71,13 +57,12 @@ class GreenhouseZoneCard extends HTMLElement {
         this._mqttSubscribed = false;
         this._unsubMqtt = null;
         this._unsubBridgeRequest = null;
-        // Zone_x_Channel_y -> { mode, scenarios, brightness, state }
-        // Наповнюється ЛИШЕ з LogicService/+ (retained стан + живі оновлення).
+        // Zone_x_Channel_y -> { mode, scenarios, brightness, state }, наповнюється
+        // лише з LogicService/+ (retained стан + живі оновлення).
         this._channelState = {};
-        // device (ieee-адреса) -> { zone, device, status: 'offline' }
-        // Персистентний список ПОТОЧНО офлайн-пристроїв - не залежить від
-        // того, чи закрив оператор спливаючий тост. Очищується лише коли
-        // прийде повідомлення status: 'online' для того самого device.
+        // device (ieee-адреса) -> { zone, device, status: 'offline' }.
+        // Прибирається лише повідомленням status: 'online' для того ж device,
+        // не залежить від закриття тоста.
         this._offlineDevices = {};
         this._toastStackRoot = null;
         this._offlineListModalRoot = null;
@@ -119,9 +104,6 @@ class GreenhouseZoneCard extends HTMLElement {
         }
     }
 
-    // -------------------------------------------------------------------
-    // MQTT: стан каналів + повідомлення про online/offline пристроїв
-    // -------------------------------------------------------------------
     async _subscribeToMqtt() {
         try {
             this._unsubMqtt = await this._hass.connection.subscribeMessage(
@@ -148,8 +130,7 @@ class GreenhouseZoneCard extends HTMLElement {
         if (!message.topic.startsWith(prefix)) return;
 
         const group = message.topic.slice(prefix.length);
-        // Цікавить лише LogicService/<group> (без /set, /get, і без bridge/*,
-        // де є "/") - саме там лежить повний стан каналу.
+        // Цікавить лише LogicService/<group>, без /set, /get і без bridge/*.
         if (group.includes('/')) return;
 
         let parsed;
@@ -168,8 +149,8 @@ class GreenhouseZoneCard extends HTMLElement {
         const info = parseGroupName(group);
         if (!info || info.zone !== zone) return;
 
-        // mode спільний на всю зону - зміна БУДЬ-ЯКОГО каналу цієї зони
-        // могла стосуватись режиму, тож пілюлі оновлюємо завжди.
+        // Режим спільний на зону - зміна будь-якого каналу могла його стосуватись,
+        // тож пілюлі оновлюються завжди.
         this._renderModeRow();
 
         if (info.channel === activeChannel) {
@@ -217,7 +198,7 @@ class GreenhouseZoneCard extends HTMLElement {
         }
     }
 
-    // mode - ОДИН на всю зону: публікуємо в /set КОЖНОГО каналу зони.
+    // mode - один на всю зону, публікується в /set кожного каналу.
     _setZoneMode(zone, newMode) {
         for (let ch = 1; ch <= CHANNELS_PER_ZONE; ch++) {
             this._publishSet(zone, ch, { mode: newMode });
@@ -228,9 +209,6 @@ class GreenhouseZoneCard extends HTMLElement {
         this._renderModalBody();
     }
 
-    // -------------------------------------------------------------------
-    // Побудова базового шаблону картки (виконується один раз)
-    // -------------------------------------------------------------------
     _buildBaseLayout() {
         this.innerHTML = `
       <style>
@@ -253,7 +231,7 @@ class GreenhouseZoneCard extends HTMLElement {
 
         .grid-container {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             grid-template-rows: repeat(2, 1fr);
             gap: 12px;
             flex: 1;
@@ -352,29 +330,35 @@ class GreenhouseZoneCard extends HTMLElement {
         this._updateOfflineBadge();
     }
 
-    // -------------------------------------------------------------------
-    // Оновлення міток стану на плитках зон (за станом каналу 1 кожної зони)
-    // -------------------------------------------------------------------
     _updateZoneStatuses() {
         for (let i = 1; i <= ZONES; i++) {
             const iconEl = this.querySelector(`#zone-${i}-icon`);
             const statusEl = this.querySelector(`#zone-${i}-val`);
             if (!iconEl || !statusEl) continue;
 
-            const cfg = this._getChannelState(i, 1);
-            const isOn = cfg.state === 'ON';
-            statusEl.textContent = isOn ? `Увімкнено · ${cfg.brightness}%` : 'Вимкнено';
-            iconEl.style.color = isOn ? '#4caf50' : 'grey';
+            let arithmetic_mean_brightness = 0;
+            let isZoneOn = false;
+            
+            for (let j = 1; j <= CHANNELS_PER_ZONE; j++) {
+                const _cfg = this._getChannelState(i, j);
+                
+                if (_cfg.state === 'ON') {
+                    isZoneOn = true;
+                }
+                
+                const temp_brightness = _cfg.brightness || 0;
+                arithmetic_mean_brightness += temp_brightness;
+            }
+            
+            arithmetic_mean_brightness = Math.round(arithmetic_mean_brightness / CHANNELS_PER_ZONE);
+            
+            statusEl.textContent = isZoneOn ? `Увімкнено · ${arithmetic_mean_brightness}%` : 'Вимкнено';
+            iconEl.style.color = isZoneOn ? '#4caf50' : 'grey';
         }
     }
 
-    // -------------------------------------------------------------------
-    // Тости про online/offline пристроїв - fixed-position стек, живе в
-    // document.body (не всередині картки), щоб бути видимим завжди,
-    // незалежно від скролу/розміщення картки на дашборді. Тост зникає
-    // ЛИШЕ по кліку на хрестик - жодного авто-приховування, щоб оператор
-    // гарантовано побачив сповіщення.
-    // -------------------------------------------------------------------
+    // Тости живуть у document.body, поза карткою, і зникають лише по кліку
+    // на хрестик - без авто-приховування.
     _ensureToastStack() {
         if (this._toastStackRoot) return this._toastStackRoot;
 
@@ -454,11 +438,8 @@ class GreenhouseZoneCard extends HTMLElement {
         stack.appendChild(toast);
     }
 
-    // -------------------------------------------------------------------
-    // Бейдж-лічильник офлайн-пристроїв на картці + модалка зі списком.
-    // Бейдж лишається видимим, навіть якщо оператор закрив усі тости -
-    // єдиний спосіб його прибрати - щоб прийшло status: 'online'.
-    // -------------------------------------------------------------------
+    // Бейдж лишається видимим, поки не прийде status: 'online' - закриття
+    // тостів на це не впливає.
     _updateOfflineBadge() {
         const badge = this.querySelector('#gh-offline-badge');
         const countEl = this.querySelector('#gh-offline-count');
@@ -594,9 +575,7 @@ class GreenhouseZoneCard extends HTMLElement {
             .join('');
     }
 
-    // -------------------------------------------------------------------
     // Модальне вікно зони
-    // -------------------------------------------------------------------
     _openZoneModal(zone) {
         this._modalState = { open: true, zone, activeChannel: 1 };
 
@@ -604,8 +583,8 @@ class GreenhouseZoneCard extends HTMLElement {
         overlay.className = 'gh-modal-overlay';
         overlay.id = 'gh-modal-overlay';
 
-        // Стилі модалки вставляються прямо в оверлей - overlay живе в document.body,
-        // поза Shadow DOM картки, тож глобальні стилі сюди не дістануть самі.
+        // Overlay живе в document.body, поза Shadow DOM картки - глобальні
+        // стилі туди не дістануть, тому стилі модалки вставляються прямо сюди.
         overlay.innerHTML = `
             <style>
                 .gh-modal-overlay {
@@ -866,8 +845,8 @@ class GreenhouseZoneCard extends HTMLElement {
         this._modalState = null;
     }
 
-    // mode - ОДИН на всю зону: читаємо стан каналу 1 (усі канали мають
-    // збігатись), клік по пілюлі застосовує режим одразу на КОЖЕН канал зони.
+    // mode - один на зону: пілюлі читають стан каналу 1, клік застосовує
+    // режим одразу на кожен канал.
     _renderModeRow() {
         const { zone } = this._modalState;
         const cfg = this._getChannelState(zone, 1);
@@ -956,9 +935,9 @@ class GreenhouseZoneCard extends HTMLElement {
         const range = this._modalRoot.querySelector('#gh-manual-range');
         const number = this._modalRoot.querySelector('#gh-manual-number');
 
-        // ВАЖЛИВО: LogicService не має окремого поля "state" для запису -
-        // "state" на виході лише ПОХІДНИЙ від brightness (brightness>0 -> ON).
-        // Тому і тумблер, і повзунок керують ОДНИМ полем - brightness.
+        // LogicService не має окремого поля "state" для запису - на виході
+        // воно похідне від brightness (brightness>0 -> ON), тому і тумблер,
+        // і повзунок керують лише brightness.
         if (toggleBtn) {
             toggleBtn.addEventListener('click', () => {
                 const willTurnOn = !toggleBtn.classList.contains('on');
@@ -1051,9 +1030,9 @@ class GreenhouseZoneCard extends HTMLElement {
         `;
     }
 
-    // Кастомний ГГ:ХХ ввід (24-годинний формат). Кожен рядок має два текстові
-    // поля (години/хвилини) + приховане поле .gh-slot-time з фінальним "HH:MM" -
-    // саме його читають _collectScenariosFromForm/_attachTimerListeners.
+    // ГГ:ХХ ввід (24-годинний формат): два текстові поля на рядок + приховане
+    // поле .gh-slot-time з фінальним "HH:MM", яке читають _collectScenariosFromForm
+    // і _attachTimerListeners.
     _attachTimeInputListeners() {
         const rows = this._modalRoot.querySelectorAll('.gh-time-input');
 
@@ -1115,14 +1094,14 @@ class GreenhouseZoneCard extends HTMLElement {
         const scenarios = [];
         timeInputs.forEach((timeInput, idx) => {
             const time = timeInput.value;
-            if (!time) return; // порожній час -> рядок не використовується
+            if (!time) return; // порожній час ігнорується
             const percentRaw = percentInputs[idx].value;
             scenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
         });
         return scenarios;
     }
 
-    // Заповнює вже відрендерені поля форми значеннями з масиву (вставка з буфера) -
+    // Заповнює вже відрендерені поля значеннями з масиву (вставка з буфера)
     // без перебудови DOM, щоб не втратити фокус/скрол.
     _populateTimerRows(scenarios) {
         const hhInputs = this._modalRoot.querySelectorAll('.gh-time-hh');
@@ -1187,19 +1166,15 @@ class GreenhouseZoneCard extends HTMLElement {
                 }
                 const scenarios = safeParseScenarios(raw);
                 this._populateTimerRows(scenarios);
-                // Свідомо НЕ публікуємо одразу - користувач бачить вставлені
-                // значення у формі й підтверджує окремим "Зберегти розклад".
+                // Не публікується одразу - підтверджується окремим "Зберегти розклад".
                 this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити розклад', 2000);
             });
         }
     }
 
-    // -------------------------------------------------------------------
-    // Оновлення "живих" значень у вже відкритому модальному вікні.
-    // Пілюлі режиму (зона-рівень) і поля активного каналу оновлюються з
-    // MQTT автоматично; редактор таймера НАЖИВО не чіпаємо навмисно, щоб
-    // не затерти незбережений чернетковий розклад користувача.
-    // -------------------------------------------------------------------
+    // Оновлення живих значень у відкритій модалці: пілюлі режиму і поля
+    // активного каналу оновлюються з MQTT; редактор таймера навмисно не
+    // чіпається, щоб не затерти незбережений розклад.
     _refreshModalLiveValues() {
         if (!this._modalState || !this._modalState.open || !this._modalRoot) return;
         this._renderModeRow();
@@ -1228,7 +1203,6 @@ class GreenhouseZoneCard extends HTMLElement {
         }
     }
 
-    // -------------------------------------------------------------------
     disconnectedCallback() {
         if (this._unsubMqtt) {
             this._unsubMqtt();

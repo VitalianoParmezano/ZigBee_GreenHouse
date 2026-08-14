@@ -1,38 +1,47 @@
 /**
-
-This extension automatically creates groups for each channel of a device based on its productLabel (DIP switch value).
-
-Як це працює:
-1. Коли новий пристрій приєднується та успішно проходить інтерв'ю, розпочинається фоновий процес налаштування груп.
-2. Фоновий процес читає productLabel (DIP switch) з пристрою та створює (або знаходить існуючі) 3 групи для кожного каналу.
-3. Якщо група вже існувала — після додавання нового члена його ендпоінт синхронізується з
-   ОСТАННІМ ВІДОМИМ СТАНОМ ГРУПИ (this.state.get(групи)), включно з кастомними атрибутами
-   (offline_brightness, scenarios), а не лише on/off + яскравістю.
-   ВАЖЛИВО: цей кеш містить кастомні атрибути лише якщо ними керували через ТОПІК ГРУПИ
-   (zigbee2mqtt/<group>/set), а не через топік окремого пристрою — інакше значення кешуються
-   під конкретним пристроєм, а не групою, і синхронізація тут їх не побачить.
-4. Якщо пристрій залишає мережу, всі його групи автоматично очищуються. [TODO: ще не реалізовано]
-
-УВАГА: у Zigbee2MQTT 2.11+ зовнішні розширення завантажуються лише з увімкненим
-advanced.enable_external_js, і документація описує їх у форматі .mjs (ESM).
-Цей файл лишений у CommonJS-форматі, як і надісланий оригінал — перед розгортанням
-на Z2M 2.x переконайся, що конвертуєш його на export default / .mjs.
-
+ * Розширення автоматично створює групи для кожного каналу пристрою на основі
+ * productLabel (значення DIP-перемикача).
+ *
+ * Після успішного інтерв'ю нового пристрою запускається фоновий процес:
+ * productLabel зчитується з пристрою, і для кожного каналу створюється (або
+ * знаходиться вже існуюча) група. Якщо група вже існувала, ендпоінт нового
+ * члена синхронізується з останнім відомим станом групи (this.state.get),
+ * включно з кастомними атрибутами offline_brightness і scenarios, а не лише
+ * on/off та яскравістю. Цей кеш містить кастомні атрибути лише тоді, коли
+ * ними керували через топік самої групи (zigbee2mqtt/<group>/set) - якщо
+ * через топік окремого пристрою, значення кешуються під пристроєм, і
+ * синхронізація тут їх не побачить.
+ *
+ * TODO: очищення груп при виході пристрою з мережі ще не реалізоване.
+ *
+ * У Zigbee2MQTT 2.11+ зовнішні розширення завантажуються лише з увімкненим
+ * advanced.enable_external_js, і документація описує їх у форматі .mjs (ESM).
+ * Цей файл лишається в CommonJS-форматі - перед розгортанням на Z2M 2.x
+ * варто перевірити конвертацію на export default / .mjs.
  */
-const SHIFT = 10; // Зміщення для Ендпоінтів з каналами. Налаштовується в самому пристрої і тут
-const NUMBER_OF_CHANNELS = 3; // Кількість каналів на пристрої.
-const transitionTime = 2; // Час переходу для груп (в секундах)
+const SHIFT = 10; // зміщення ендпоінтів каналів, налаштовується також на пристрої
+const NUMBER_OF_CHANNELS = 3; // кількість каналів на пристрої
 const BRIDGE_RESPONSE_TIMEOUT_MS = 3000;
-const CHANNEL_CLUSTER = 0xFC01; // Кастомний кластер offline_brightness/scenarios на кожному каналі
+const CHANNEL_CLUSTER = 0xFC01; // кастомний кластер offline_brightness/scenarios на кожному каналі
 const MAX_SCENARIOS = 12;
 const BYTES_PER_SCENARIO = 3;
 
-const LOGIC_SERVICE_PREFIX = 'LogicService'; // Окремий канал для картки, не плутати з zigbee2mqtt/bridge/*
-const HEARTBEAT_TIMEOUT_MS = 100_000; // Пінг очікується раз на 50-70с, тому 100с - запас на один пропущений цикл
+/*
+    Тут звернути увагу.
+    Цей параметр визначає зміщення зони
+    Наприклад якщо стоїть 1, тоді до значення product_label яке зчитується 
+    з пристрою для визначення його зони (і в подальшому для призначення його в відповідну групу) додається 1.
+        Використовувати у випадках коли наприклад діп свіч на 3 піни, розрахований що можна ним
+    вказати 8 унікальних значень (включно з нулем), але для кінцевого користувача Zone_0... не 
+    припустимо, для цього робиться оффсет
+*/
+const ZONES_OFFSET = 1;
 
-const now = new Date();
-// Ті самі функції пакування, що і в external converter — тримати їх синхронізованими,
-// або перенести в спільний модуль, якщо логіка почне розростатись.
+const LOGIC_SERVICE_PREFIX = 'LogicService'; // окремий канал для картки, не плутати з zigbee2mqtt/bridge/*
+const HEARTBEAT_TIMEOUT_MS = 100_000; // пінг очікується раз на 50-70с, тому 100с - запас на один пропущений цикл
+
+// Ці функції пакування дублюють ті, що в external converter - варто тримати
+// їх синхронізованими або перенести в спільний модуль при розростанні логіки.
 function timeToMinutes(timeStr) {
     const [h, m] = String(timeStr).split(':').map(Number);
     return h * 60 + m;
@@ -51,7 +60,6 @@ function encodeScenarios(scenarios) {
 }
 
 class AutoGrouper {
-    // Нам знадобиться об'єкт state, щоб читати поточний стан пристрою
     constructor(zigbee, mqtt, state, publishEntityState, eventBus, enableDisableExtension, restartCallback, addExtension, settings, logger) {
         this.zigbee = zigbee;
         this.mqtt = mqtt;
@@ -60,7 +68,7 @@ class AutoGrouper {
 
         // Стан heartbeat-моніторингу тримається окремо від груп/каналів
         this.deviceZones = new Map();        // ieeeAddr -> номер зони, кешується один раз при налаштуванні
-        this.zoneLookupInFlight = new Map(); // ieeeAddr -> Promise, захищає від паралельних read() при частих пінгах
+        this.zoneLookupInFlight = new Map(); // ieeeAddr -> Promise, дедуплікує паралельні read() при частих пінгах
         this.heartbeatTimers = new Map();    // ieeeAddr -> handle таймера очікування наступного пінгу
         this.deviceOnlineState = new Map();  // ieeeAddr -> 'online' | 'offline', заповнюється лише після першої події
     }
@@ -74,31 +82,14 @@ class AutoGrouper {
         this.eventBus.onStateChange(this, this.onStateChange.bind(this));
 
         // Grace-таймери озброюються для всіх вже відомих пристроїв одразу при старті/рестарті
-        // розширення. Без цього кроку плата, що замовкла ще ДО рестарту, ніколи не отримає
-        // свій перший пінг і її offline-таймер просто ніколи не буде запущено - вона застрягне
+        // розширення. Без цього кроку плата, що замовкла ще до рестарту, ніколи не отримає
+        // свій перший пінг, і її offline-таймер просто ніколи не буде запущено - вона застрягне
         // у невизначеному стані замість того, щоб бути позначеною офлайн протягом 100с.
         this._armGraceTimersForKnownDevices();
-
-        // Створення інтервалу на 12 годин (12 * 60 * 60 * 1000 = 43200000 мс)
-        // const TWELVE_HOURS_MS = 1000*60;
-        // this.syncInterval = setInterval(() => {
-        //     this.syncronizationOfGroupsHalfOfDay().catch((err) => {
-        //         console.error(`🌿 [AutoGrouper] ❌ Помилка у фоновому таймері: ${err.message}`);
-        //     });
-        // }, TWELVE_HOURS_MS);
-        
-        // console.log('🌿 [AutoGrouper] Таймер періодичної синхронізації (12h) запущено.');
-        
     }
 
     stop() {
         this.eventBus.removeListeners(this);
-        
-        // Очищення таймера при зупинці розширення
-        if (this.syncInterval) {
-            clearInterval(this.syncInterval);
-            this.syncInterval = null;
-        }
 
         // Усі heartbeat-таймери прибираються, інакше вони спрацюють у "порожнечу"
         // вже після зупинки розширення (посилання на стару this-обгортку залишиться в пам'яті)
@@ -106,7 +97,7 @@ class AutoGrouper {
             clearTimeout(timer);
         }
         this.heartbeatTimers.clear();
-        
+
         console.log('🌿 [AutoGrouper] STOPPED.');
     }
 
@@ -114,29 +105,26 @@ class AutoGrouper {
         console.log(`🌿 [AutoGrouper] Device joined: ${data.device.ieeeAddr}`);
     }
 
-    // Інтерв'ю девайсів, коли новий девай конектиться
+    // Обробка результату інтерв'ю після приєднання нового пристрою
     async onDeviceInterview(data) {
         if (data.status !== 'successful') return;
 
         console.log(`🌿 [AutoGrouper] Interview successful for: ${data.device.ieeeAddr}. Запускаю фоновий процес...`);
 
         this.setupDevicesInBackground(data.device).catch((err) => {
-            
             console.error(`🌿 [AutoGrouper] ❌ Помилка у фоновому процесі: ${err.message}`);
         });
         console.log(`🌿 [AutoGrouper] Процес налаштування пристрою ${data.device} запущено.`);
     }
 
-// Обробка змін стану пристроїв
+    // data містить: { entity (об'єкт пристрою/групи), from, to, update (змінені поля) }
     async onStateChange(data) {
-        // data містить: { entity (об'єкт пристрою/групи), from (старий стан), to (новий стан), update (змінені поля) }
-        
         if (!data.entity || data.entity.isGroup()) return;
 
         // Пінг (серцебиття) ловиться тут - мікроконтролером надсилається 2, очікується підтвердження зв'язку
         if (data.update && data.update.boot_status === 2) {
             await this._handleHeartbeatPing(data.entity);
-            return; // більше нічого не обробляється в цій події
+            return;
         }
     }
 
@@ -292,19 +280,19 @@ class AutoGrouper {
         console.log(`🌿 [Heartbeat] Стартові таймери озброєно для ${armedCount} пристроїв.`);
     }
 
-    // Вся логіка з MQTT винесена в окремий фоновий метод
-async setupDevicesInBackground(device) {
+    async setupDevicesInBackground(device) {
         await new Promise((resolve) => setTimeout(resolve, 2000));
         console.log(`\n🌿 [AutoGrouper-BG] === Налаштування груп ===`);
 
         const basicEndpoint = device.zh.getEndpoint(1);
-        let myLabel;
+        let myLabel = 0;
 
         if (basicEndpoint) {
-            try {
+        try {
                 console.log(`🌿 [AutoGrouper-BG] Зчитування productLabel...`);
                 const result = await basicEndpoint.read('genBasic', ['productLabel']);
-                myLabel = result?.productLabel;
+                myLabel = Number(result?.productLabel || 0) + ZONES_OFFSET;
+                console.log(`🌿 [AutoGrouper-BG] productLabel == ${myLabel}`);
             } catch (error) {
                 console.error(`🌿 [AutoGrouper-BG] Помилка читання: ${error.message}`);
             }
@@ -312,16 +300,15 @@ async setupDevicesInBackground(device) {
 
         if (!myLabel || isNaN(Number(myLabel))) return;
 
+        //myLabel += 1;
         // Зона кешується одразу - подальші пінги від цього пристрою більше не
         // потребуватимуть окремого Zigbee-читання productLabel у _resolveZone()
         this.deviceZones.set(device.ieeeAddr, Number(myLabel));
 
         const deviceFriendlyName = device.name;
 
-        // ---------------------------------------------------------------
-        // синхронізація системних метаданих пристрою (EP2) перед роботою з каналами.
-        // відновлюється режим (mode), час (device_time) та виставляється boot_status = 1.
-        // ---------------------------------------------------------------
+        // Системні метадані пристрою (EP2) синхронізуються перед роботою з каналами:
+        // відновлюється режим (mode), час (device_time), виставляється boot_status = 1
         await this.syncNewMemberFromDeviceState(device);
 
         for (let i = 1; i <= NUMBER_OF_CHANNELS; i++) {
@@ -334,14 +321,8 @@ async setupDevicesInBackground(device) {
 
             console.log(`\n🌿 [AutoGrouper-BG] Обробка групи ${groupName} (ID: ${group_ID})...`);
 
-            // ---------------------------------------------------------------
-            // створення групи, з перевіркою, чи вона вже існувала.
-            // ---------------------------------------------------------------
             const groupAlreadyExisted = await this.ensureGroupExists(groupName, group_ID);
 
-            // ---------------------------------------------------------------
-            // додавання ендпоінту цього пристрою до групи.
-            // ---------------------------------------------------------------
             console.log(`🌿 [AutoGrouper-BG] Додавання пристроя ${deviceFriendlyName} до групи ${groupName}, ендпоінт: ${endpointID}`);
             this.eventBus.emitMQTTMessage({
                 topic: 'zigbee2mqtt/bridge/request/group/members/add',
@@ -354,10 +335,8 @@ async setupDevicesInBackground(device) {
             });
             await new Promise((resolve) => setTimeout(resolve, 1000));
 
-            // ---------------------------------------------------------------
-            // якщо група вже існувала — синхронізується новий член
-            // з останнім відомим станом ГРУПИ (не якогось довільного пристрою).
-            // ---------------------------------------------------------------
+            // Якщо група вже існувала - новий член синхронізується з останнім
+            // відомим станом групи, а не якогось довільного пристрою
             if (groupAlreadyExisted) {
                 await this.syncNewMemberFromGroupState(groupName, endpointID, device);
             } else {
@@ -366,7 +345,7 @@ async setupDevicesInBackground(device) {
 
             console.log(`🌿 [AutoGrouper-BG] Канал ${channelName} успішно налаштовано.`);
         }
-        // Встановлення boot_status в 1        
+
         const systemEndpoint = device.zh.getEndpoint(2);
         if (systemEndpoint) {
             try {
@@ -379,77 +358,59 @@ async setupDevicesInBackground(device) {
         }
     }
 
-
     /**
-     * Синхронізує системні налаштування пристрою в цілому (Ендпоінт 2).
-     * Відновлює або встановлює режим роботи (mode), поточний час та статус завантаження.
-     * @param {Object} device - Об'єкт пристрою з zigbee-herdsman
+     * Синхронізуються системні налаштування пристрою в цілому (ендпоінт 2):
+     * режим роботи (mode), поточний час та статус завантаження.
+     * @param {Object} device - об'єкт пристрою з zigbee-herdsman
      */
     async syncNewMemberFromDeviceState(device) {
         const SYSTEM_CLUSTER = 0xFF01;
         const MODE_MAP_REVERSE = { manual: 0, timer: 1, auto: 2 };
 
-        // 1. Отримуємо 2-й ендпоінт, де живуть системні атрибути (mode, boot_status, device_time)
+        // Ендпоінт 2 містить системні атрибути (mode, boot_status, device_time)
         const metadataEndpoint = device.zh.getEndpoint(2);
         if (!metadataEndpoint) {
             console.warn(`🌿 [AutoGrouper-BG] ❌ Не вдалось отримати EP2 (System) для пристрою ${device.ieeeAddr}.`);
             return;
         }
 
-        // Читаємо останній відомий стан самого пристрою з кешу Z2M (state.json)
         const lastKnownState = this.state.get(device) || {};
         console.log(`🌿 [AutoGrouper-BG] Останні відомі системні дані пристрою ${device.ieeeAddr}:`, JSON.stringify(lastKnownState));
 
-        // Визначаємо цільовий режим: беремо збережений з кешу АБО ставимо 'manual' за замовчуванням для нових плат
+        // Цільовий режим береться зі збереженого в кеші, або 'manual' за замовчуванням для нових плат
         const targetModeStr = lastKnownState.mode || 'manual';
         const targetModeNum = MODE_MAP_REVERSE[targetModeStr] ?? 2; // 2 = auto
 
         console.log(`🌿 [AutoGrouper-BG] Синхронізація плати "${device.name}" -> Режим: "${targetModeStr}" (${targetModeNum})...`);
 
         try {
-            // ---  Синхронізація режиму роботи (Атрибут 1) ---
             await metadataEndpoint.write(SYSTEM_CLUSTER, {
                 1: { value: targetModeNum, type: 0x20 } // 0x20 = uint8
             });
             console.log(`🌿 [AutoGrouper-BG] ✓ Режим "${targetModeStr}" успішно записано в пристрій ${device.ieeeAddr}.`);
 
-            // Синхронізація часу
-            // const localAsUtcSeconds = Date.UTC(
-            //     now.getFullYear(), now.getMonth(), now.getDate(),
-            //     now.getHours(), now.getMinutes(), now.getSeconds(),
-            // ) / 1000;
-            // const zigbeeTime = Math.floor(localAsUtcSeconds) - ZIGBEE_EPOCH_OFFSET;
-
-            // // Записуємо в атрибут 0 з типом 0xE2 (UTCTime)
-            // await metadataEndpoint.write('genTime', {
-            //     0: { value: zigbeeTime, type: 0xE2 }
-            // });
-            
-            //Покищо так, роботу з часом зробить конвертер
+            // Час поки що не записується напряму в атрибут - обробку часу виконує конвертер
             this.eventBus.emitMQTTMessage({
                 topic: `zigbee2mqtt/${device.ieeeAddr}/set`,
                 message: JSON.stringify({ device_time: 0 }),
             });
 
-            // ---  Скидання статусу завантаження (Атрибут 0) ---
-            // Кажемо мікроконтролеру, що він успішно налаштований (boot_status = 1)
-
             console.log(`🌿 [AutoGrouper-BG] Синхронізація метаданних для "${device.name}" завершена успішно!`);
-
         } catch (error) {
             console.error(`🌿 [AutoGrouper-BG] Помилка запису в системний ендпоінт EP2: ${error.message}`);
         }
     }
+
     /**
-     * Синхронізує щойно доданого члена групи з останнім відомим станом ГРУПИ.
+     * Синхронізується щойно доданий член групи з останнім відомим станом групи.
      *
-     * this.zigbee.resolveEntity(name) — недокументоване внутрішнє API, точна форма
-     * повернутого об'єкта могла відрізнятись між версіями Z2M. Перед боєм рекомендується
-     * один раз вивести console.log(JSON.stringify(Object.keys(groupEntity))) і за потреби
-     * підправити groupEntity.group / groupEntity нижче.
+     * this.zigbee.resolveEntity(name) - недокументоване внутрішнє API, точна форма
+     * повернутого об'єкта може відрізнятись між версіями Z2M. Перед деплоєм варто
+     * один раз вивести console.log(JSON.stringify(Object.keys(groupEntity))) і за
+     * потреби підправити groupEntity.group / groupEntity нижче.
      *
-     * ВАЖЛИВО: this.state.get(група) поверне щось лише якщо offline_brightness/scenarios
-     * КОЛИСЬ встановлювались через топік САМОЇ ГРУПИ (zigbee2mqtt/<group>/set),
+     * this.state.get(група) поверне щось лише якщо offline_brightness/scenarios
+     * колись встановлювались через топік самої групи (zigbee2mqtt/<group>/set),
      * а не через топік конкретного пристрою.
      */
     async syncNewMemberFromGroupState(groupName, endpointID, device) {
@@ -472,7 +433,7 @@ async setupDevicesInBackground(device) {
 
         console.log(`🌿 [AutoGrouper-BG] Останні дані групи "${groupName}": ${JSON.stringify(lastKnownState)}`);
 
-        // Беремо ендпоінт напряму з живого об'єкта пристрою, без повторного пошуку за іменем!
+        // Ендпоінт береться напряму з живого об'єкта пристрою, без повторного пошуку за іменем
         const targetEndpoint = device.zh.getEndpoint(endpointID);
         if (!targetEndpoint) {
             console.warn(`🌿 [AutoGrouper-BG] Не вдалось отримати ендпоінт ${endpointID} для пристрою ${device.ieeeAddr}.`);
@@ -485,7 +446,6 @@ async setupDevicesInBackground(device) {
         );
 
         try {
-            // --- Стандартні on/off + рівень ---
             if (lastKnownState.state === 'OFF') {
                 await targetEndpoint.command('genOnOff', 'off', {});
             } else if (lastKnownState.state === 'ON') {
@@ -498,7 +458,6 @@ async setupDevicesInBackground(device) {
                 }
             }
 
- // --- Кастомні атрибути каналу ---
             if (typeof lastKnownState.offline_brightness === 'number') {
                 await targetEndpoint.write(CHANNEL_CLUSTER, {
                     0: {value: lastKnownState.offline_brightness, type: 0x20},
@@ -523,29 +482,23 @@ async setupDevicesInBackground(device) {
     }
 
     /**
-     * Надсилає запит на створення групи й чекає підтвердження від бриджа.
-     * Повертає true, якщо група вже існувала раніше (запит на створення
-     * повернув помилку — найімовірніше "already exists"), і false,
-     * якщо групу справді щойно створено.
-     * Таймаут або будь-яка інша помилка теж трактується як true
-     * (безпечний варіант: краще спробувати додати член у групу, що вже
-     * може існувати, ніж помилково вважати її новою і пропустити синхронізацію).
+     * Надсилається запит на створення групи, і очікується підтвердження від бриджа.
+     * Повертається true, якщо група вже існувала раніше (запит на створення
+     * повернув помилку - найімовірніше "already exists"), і false, якщо групу
+     * справді щойно створено. Таймаут або будь-яка інша помилка теж трактується
+     * як true - безпечніше спробувати додати член у групу, що вже може існувати,
+     * ніж помилково вважати її новою і пропустити синхронізацію.
      */
-async ensureGroupExists(groupName, group_ID) {
-        // =========================================================================
-        // Локальна перевірка в пам'яті (БЕЗ MQTT-запиту і помилок у лозі)
-        // =========================================================================
+    async ensureGroupExists(groupName, group_ID) {
+        // Локальна перевірка в пам'яті, без MQTT-запиту і помилок у лозі
         const existingGroup = this.zigbee.resolveEntity(groupName) ?? this.zigbee.groupByID(group_ID);
-        
+
         if (existingGroup && existingGroup.isGroup && existingGroup.isGroup()) {
             console.log(`🌿 [AutoGrouper-BG] Група "${groupName}" (ID: ${group_ID}) вже існує в базі Z2M.`);
             this.enableGroupRetain(group_ID);
             return true;
         }
 
-        // =========================================================================
-        // Якщо групи немає — створюємо її через MQTT
-        // =========================================================================
         console.log(`🌿 [AutoGrouper-BG] Групу не знайдено. Створення "${groupName}"...`);
 
         const responsePromise = this.waitForBridgeResponse(
@@ -573,15 +526,13 @@ async ensureGroupExists(groupName, group_ID) {
             return false;
         }
 
-        // Страховка на випадок колізії, якщо група була створена кимось паралельно
+        // Страховка на випадок колізії, якщо група була створена паралельно
         console.log(`🌿 [AutoGrouper-BG] Відповідь бриджа: ${response?.status ?? 'timeout'}.`);
         return true;
     }
 
-
-
     /**
-     * Програмно вмикає retain для групи через MQTT API Zigbee2MQTT
+     * Вмикається retain для групи через MQTT API Zigbee2MQTT
      */
     enableGroupRetain(group_ID) {
         console.log(`🌿 [AutoGrouper-BG] Відправка запиту на увімкнення retain для групи ID: ${group_ID}...`);
@@ -598,8 +549,8 @@ async ensureGroupExists(groupName, group_ID) {
     }
 
     /**
-     * Одноразово чекає на MQTT-повідомлення бриджа, що відповідає предикату.
-     * Використовує окремий "токен" контексту, щоб не конфліктувати з
+     * Очікується одноразове MQTT-повідомлення бриджа, що відповідає предикату.
+     * Використовується окремий "токен" контексту, щоб не конфліктувати з
      * постійними слухачами, зареєстрованими на `this` у start().
      */
     waitForBridgeResponse(topic, predicate, timeoutMs) {
@@ -629,63 +580,6 @@ async ensureGroupExists(groupName, group_ID) {
             setTimeout(() => finish(null), timeoutMs);
         });
     }
-
-    /**
-     * Періодична синхронізація: надсилає boot_status = 0 всім сумісним пристроям
-     * із паузою між ними, щоб уникнути перевантаження мережі (Zigbee Storm).
-     */
-/**
-     * Періодична синхронізація: надсилає boot_status = 0 всім сумісним пристроям
-     */
-    async syncronizationOfGroupsHalfOfDay() {
-
-        let a = this.state.getAllDevices();
-        console.log(`\n\n\n\n\n\n this.state.getAllDevices:\n ${a} \n\n\n\n\n`);
-        console.log('\n🌿 [AutoGrouper] === Запуск періодичної синхронізації (відправка boot_status = 0) ===');
-
-        // Правильний спосіб отримання пристроїв з API Zigbee2MQTT
-        let devices = [];
-        
-        if (typeof this.zigbee.getClients === 'function') {
-            devices = this.zigbee.getClients();
-        } else if (typeof this.zigbee.devices === 'function') {
-            devices = this.zigbee.devices();
-        } else if (this.zigbee.devices && typeof this.zigbee.devices === 'object') {
-            devices = Object.values(this.zigbee.devices);
-        } else {
-            console.error('🌿 [AutoGrouper] ❌ Не вдалося знайти метод Z2M для отримання списку пристроїв!');
-            return;
-        }
-
-        if (devices.length === 0) {
-            console.warn('🌿 [AutoGrouper] ⚠️ Масив пристроїв порожній. Жодного пристрою не знайдено.');
-        }
-
-        for (const device of devices) {
-            // Пропускаємо координатор та сутності, які не мають zigbee-herdsman об'єкта (zh)
-            if (!device || !device.zh || device.zh.type === 'Coordinator') continue;
-
-            // Шукаємо системний ендпоінт 2, як у твоєму коді
-            const systemEndpoint = device.zh.getEndpoint(2);
-            if (!systemEndpoint) continue;
-
-            try {
-                console.log(`🌿 [AutoGrouper] Відправка boot_status = 0 пристрою: ${device.name}`);
-                
-                // Записуємо 0 точнісінько так само, як ти записуєш 1 у своєму коді
-                await systemEndpoint.write(0xFF01, { 0x0000: { value: 0, type: 0x20 } });
-                
-                // Пауза 5 секунд, щоб не створити Zigbee шторм
-                await new Promise((resolve) => setTimeout(resolve, 5000));
-
-            } catch (error) {
-                console.error(`🌿 [AutoGrouper] ❌ Помилка запису boot_status для ${device.name}: ${error.message}`);
-            }
-        }
-
-        console.log('🌿 [AutoGrouper] === Періодичну синхронізацію завершено ===\n');
-    }
-
 }
 
 module.exports = AutoGrouper;
