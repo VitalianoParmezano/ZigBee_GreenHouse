@@ -1,0 +1,21 @@
+# Git та IDE
+/.git
+/.vscode
+
+# Віртуальне середовище
+/venv
+
+# Кеш Python
+__pycache__/
+*.py[cod]
+
+# Бази даних стану
+*.sqlite3
+*.db
+
+# Конфігурації (залишаємо тільки config.example.yaml)
+config.yaml
+
+# Документація та Docker-файли
+Dockerfile
+.dockerignore

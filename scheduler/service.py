@@ -88,8 +88,8 @@ class SchedulerService:
                     timer_channels += 1
 
         log.info(
-            "Тік завершено: %s канал(ів) у timer-режимі, %s команд(и) надіслано",
-            timer_channels, commands_sent,
+            "Тік завершено: %s канал(ів) у timer-режимі, %s команд(и) надіслано. Поточний час: %d",
+            timer_channels, commands_sent, now_minutes
         )
 
     def _process_channel(self, zone: int, channel: int, now_minutes: int) -> str:

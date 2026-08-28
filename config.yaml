@@ -1,5 +1,5 @@
 mqtt:
-  host: localhost
+  host: 172.17.0.2
   port: 1883
   user: ""
   password: ""
@@ -15,4 +15,4 @@ scheduler:
 logging:
   # DEBUG - показує кожен канал на кожному тіку (навіть коли нічого не
   # змінилось) і чому саме пропущено. INFO - тільки реальні зміни.
-  level: DEBUG
+  level: INFO 
