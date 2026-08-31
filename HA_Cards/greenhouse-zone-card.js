@@ -2,10 +2,14 @@
 // звернення до zigbee2mqtt чи HA-сутностей. Обмін даними ведеться через MQTT:
 //
 //   LogicService/Zone_x_Channel_y        <- retained, повний стан каналу
-//                                            (mode, scenarios, brightness, state)
+//                                            (mode, scenarios,
+//                                            brightness, state)
 //   LogicService/Zone_x_Channel_y/set    -> запис (mode/scenarios/brightness)
 //   LogicService/bridge/request          <- online/offline пристрою:
 //                                            {zone, device, status}
+//   LogicService/bridge/sensor           -> глобальний показник датчика
+//                                            (тимчасово - зі слайдера в
+//                                            Авторежимі): {"umol": ...}
 //
 // Режим спільний на всю зону: усі CHANNELS_PER_ZONE каналів синхронізуються
 // одним значенням mode, клік по пілюлі публікує {mode: ...} в /set кожного
@@ -20,6 +24,7 @@ const CHANNELS_PER_ZONE = 3;
 const SCENARIO_SLOTS = 12;
 const CONTROL_PREFIX = 'LogicService';
 const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV1';
+const DEBUG_UMOL_SENSOR = true; // В авторежимі чи показувати ручний умоль сенсор (повзунок який імітує датчик) true = показати
 
 function groupName(zone, channel) {
     return `Zone_${zone}_Channel_${channel}`;
@@ -48,6 +53,14 @@ function clampPercent(value) {
     return Math.min(100, Math.max(0, Math.round(n)));
 }
 
+// μmol/m²/s (PPFD) - на відміну від відсотка яскравості, верхньої межі
+// свідомо не ставимо (пряме сонце може давати ~2000+), лише невід'ємне ціле.
+function clampUmol(value) {
+    const n = Number(value);
+    if (Number.isNaN(n)) return 0;
+    return Math.max(0, Math.round(n));
+}
+
 const DEFAULT_CHANNEL_STATE = { mode: 'manual', scenarios: [], brightness: 0, state: 'OFF' };
 
 class GreenhouseZoneCard extends HTMLElement {
@@ -66,6 +79,9 @@ class GreenhouseZoneCard extends HTMLElement {
         this._offlineDevices = {};
         this._toastStackRoot = null;
         this._offlineListModalRoot = null;
+        // Тимчасова заміна реального датчика PPFD: локальне (лише в цій
+        // вкладці браузера) останнє виставлене значення μmol зі слайдера.
+        this._lastUmolReading = 0;
     }
 
     setConfig(config) {
@@ -195,6 +211,20 @@ class GreenhouseZoneCard extends HTMLElement {
             });
         } catch (err) {
             console.error(`[GreenhouseZoneCard] Помилка публікації в ${topic}:`, err);
+        }
+    }
+
+    // Глобальний показник (не по зоні/каналу) - тимчасова заміна реального
+    // датчика PPFD, поки він не підключений.
+    async _publishSensorReading(umol) {
+        if (!this._hass) return;
+        try {
+            await this._hass.callService('mqtt', 'publish', {
+                topic: `${CONTROL_PREFIX}/bridge/sensor`,
+                payload: JSON.stringify({ umol }),
+            });
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Помилка публікації сенсора:', err);
         }
     }
 
@@ -710,12 +740,20 @@ class GreenhouseZoneCard extends HTMLElement {
                     gap: 10px;
                     margin-bottom: 6px;
                 }
+                .gh-auto-scenario-row {
+                    display: grid;
+                    grid-template-columns: 24px 90px 1fr 70px;
+                    align-items: center;
+                    gap: 8px;
+                    margin-bottom: 6px;
+                }
                 .gh-scenario-index {
                     font-size: 12px;
                     opacity: 0.5;
                     text-align: right;
                 }
-                .gh-scenario-row input[type="number"] {
+                .gh-scenario-row input[type="number"],
+                .gh-auto-scenario-row input[type="number"] {
                     padding: 6px 8px;
                     border-radius: 8px;
                     border: 1px solid rgba(255, 255, 255, 0.2);
@@ -897,9 +935,10 @@ class GreenhouseZoneCard extends HTMLElement {
             html = this._renderManualSection(zone, activeChannel);
         } else if (zoneMode === 'timer') {
             html = this._renderTimerSection(zone, activeChannel);
+        } else if (zoneMode === 'auto') {
+            html = this._renderAutoSection(zone, activeChannel);
         } else {
-            // TODO: авторежим ще не реалізовано на бекенді (service.py: mode=='auto' -> skip)
-            html = `<div class="gh-auto-placeholder">Авторежим ще не реалізовано (TODO)</div>`;
+            html = `<div class="gh-auto-placeholder">Невідомий режим</div>`;
         }
 
         body.innerHTML = html;
@@ -908,6 +947,8 @@ class GreenhouseZoneCard extends HTMLElement {
             this._attachManualListeners(zone, activeChannel);
         } else if (zoneMode === 'timer') {
             this._attachTimerListeners(zone, activeChannel);
+        } else if (zoneMode === 'auto') {
+            this._attachAutoListeners(zone, activeChannel);
         }
     }
 
@@ -989,45 +1030,8 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     _renderTimerSection(zone, channel) {
-        const scenarios = this._getChannelState(zone, channel).scenarios || [];
+        return this._renderScheduleSection(zone, channel, false);
 
-        let rowsHtml = '';
-        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
-            const existing = scenarios[idx] || {};
-            const time = existing.time || '';
-            const brightness = existing.brightness !== undefined ? existing.brightness : '';
-            const [hh, mm] = time.split(':');
-
-            rowsHtml += `
-                <div class="gh-scenario-row">
-                    <div class="gh-scenario-index">${idx + 1}</div>
-                    <div class="gh-time-input" data-slot="${idx}">
-                        <input type="text" inputmode="numeric" maxlength="2" placeholder="ГГ"
-                               class="gh-time-part gh-time-hh" data-slot="${idx}" value="${hh || ''}">
-                        <span class="gh-time-sep">:</span>
-                        <input type="text" inputmode="numeric" maxlength="2" placeholder="ХХ"
-                               class="gh-time-part gh-time-mm" data-slot="${idx}" value="${mm || ''}">
-                        <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${time}">
-                    </div>
-                    <input type="number" data-slot="${idx}" class="gh-slot-percent" min="0" max="100" placeholder="%" value="${brightness}">
-                </div>
-            `;
-        }
-
-        return `
-            <div class="gh-section-title">Таймерний розклад (Канал ${channel})</div>
-            ${rowsHtml}
-            <div class="gh-btn-row">
-                <button class="gh-secondary-btn" id="gh-copy-scenarios">Копіювати розклад</button>
-                <button class="gh-secondary-btn" id="gh-paste-scenarios">Вставити розклад</button>
-            </div>
-            <button class="gh-save-btn" id="gh-save-scenarios">Зберегти розклад</button>
-            <div class="gh-hint">
-                Порожні рядки (без часу) ігноруються при збереженні.
-                Копіювання/вставка працює між будь-якими зонами й каналами
-                (буфер спільний, зберігається в браузері).
-            </div>
-        `;
     }
 
     // ГГ:ХХ ввід (24-годинний формат): два текстові поля на рядок + приховане
@@ -1039,7 +1043,7 @@ class GreenhouseZoneCard extends HTMLElement {
         rows.forEach((row) => {
             const hhInput = row.querySelector('.gh-time-hh');
             const mmInput = row.querySelector('.gh-time-mm');
-            const hiddenInput = row.querySelector('.gh-slot-time');
+            const hiddenInput = row.querySelector('input[type="hidden"]');
             if (!hhInput || !mmInput || !hiddenInput) return;
 
             const syncHidden = () => {
@@ -1088,39 +1092,41 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     _collectScenariosFromForm() {
-        const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
-        const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
+            // Тепер вона універсальна і шукає єдині класи для обох режимів
+            const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
+            const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
 
-        const scenarios = [];
-        timeInputs.forEach((timeInput, idx) => {
-            const time = timeInput.value;
-            if (!time) return; // порожній час ігнорується
-            const percentRaw = percentInputs[idx].value;
-            scenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
-        });
-        return scenarios;
-    }
+            const scenarios = [];
+            timeInputs.forEach((timeInput, idx) => {
+                const time = timeInput.value;
+                if (!time) return; // порожній час ігнорується
+                const percentRaw = percentInputs[idx].value;
+                scenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
+            });
+            return scenarios;
+        }
 
     // Заповнює вже відрендерені поля значеннями з масиву (вставка з буфера)
     // без перебудови DOM, щоб не втратити фокус/скрол.
     _populateTimerRows(scenarios) {
-        const hhInputs = this._modalRoot.querySelectorAll('.gh-time-hh');
-        const mmInputs = this._modalRoot.querySelectorAll('.gh-time-mm');
-        const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
-        const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
+            // Універсальні класи, які працюють для обох режимів
+            const hhInputs = this._modalRoot.querySelectorAll('.gh-time-hh');
+            const mmInputs = this._modalRoot.querySelectorAll('.gh-time-mm');
+            const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
+            const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
 
-        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
-            const entry = scenarios[idx] || {};
-            const time = entry.time || '';
-            const brightness = entry.brightness !== undefined ? entry.brightness : '';
-            const [hh, mm] = time.split(':');
+            for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
+                const entry = scenarios[idx] || {};
+                const time = entry.time || '';
+                const brightness = entry.brightness !== undefined ? entry.brightness : '';
+                const [hh, mm] = time.split(':');
 
-            if (hhInputs[idx]) hhInputs[idx].value = hh || '';
-            if (mmInputs[idx]) mmInputs[idx].value = mm || '';
-            if (timeInputs[idx]) timeInputs[idx].value = time;
-            if (percentInputs[idx]) percentInputs[idx].value = brightness;
+                if (hhInputs[idx]) hhInputs[idx].value = hh || '';
+                if (mmInputs[idx]) mmInputs[idx].value = mm || '';
+                if (timeInputs[idx]) timeInputs[idx].value = time;
+                if (percentInputs[idx]) percentInputs[idx].value = brightness;
+            }
         }
-    }
 
     _flashButtonText(btn, text, restoreText, delayMs = 1500) {
         if (!btn) return;
@@ -1131,19 +1137,78 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     _attachTimerListeners(zone, channel) {
+        this._attachScheduleListeners(zone, channel, false);
+        return;
+    }
+
+    // Наступні 2 функції стосуються авто та таймерного режиму, рендерять 
+    // часові мітки і "приклеюють" значення до них
+    // Універсальний рендер розкладу
+    _renderScheduleSection(zone, channel, isAuto = false) {
+        const cfg = this._getChannelState(zone, channel);
+        // Визначаємо, з якого ключа брати дані
+        const dataKey = 'scenarios';
+        const scenarios = cfg[dataKey] || [];
+
+        let rowsHtml = '';
+        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
+            const existing = scenarios[idx] || {};
+            const time = existing.time || '';
+            const brightness = existing.brightness !== undefined ? existing.brightness : '';
+            const [hh, mm] = time.split(':');
+
+            rowsHtml += `
+                <div class="gh-scenario-row">
+                    <div class="gh-scenario-index">${idx + 1}</div>
+                    <div class="gh-time-input" data-slot="${idx}">
+                        <input type="text" inputmode="numeric" maxlength="2" placeholder="ГГ"
+                               class="gh-time-part gh-time-hh" data-slot="${idx}" value="${hh || ''}">
+                        <span class="gh-time-sep">:</span>
+                        <input type="text" inputmode="numeric" maxlength="2" placeholder="ХХ"
+                               class="gh-time-part gh-time-mm" data-slot="${idx}" value="${mm || ''}">
+                        <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${time}">
+                    </div>
+                    <input type="number" data-slot="${idx}" class="gh-slot-percent" min="0" max="100" placeholder="%" value="${brightness}">
+                </div>
+            `;
+        }
+
+        const title = isAuto ? `Авторозклад (Канал ${channel})` : `Таймерний розклад (Канал ${channel})`;
+
+        return `
+            <div class="gh-section-title">${title}</div>
+            ${rowsHtml}
+            <div class="gh-btn-row">
+                <button class="gh-secondary-btn" id="gh-copy-scenarios">Копіювати розклад</button>
+                <button class="gh-secondary-btn" id="gh-paste-scenarios">Вставити розклад</button>
+            </div>
+            <button class="gh-save-btn" id="gh-save-scenarios">Зберегти розклад</button>
+            <div class="gh-hint">
+                Порожні рядки (без часу) ігноруються при збереженні.
+                Копіювання/вставка працює між будь-якими зонами й каналами.
+            </div>
+        `;
+    }
+
+    // Універсальні слухачі для розкладу
+    _attachScheduleListeners(zone, channel, isAuto = false) {
         this._attachTimeInputListeners();
 
         const saveBtn = this._modalRoot.querySelector('#gh-save-scenarios');
         const copyBtn = this._modalRoot.querySelector('#gh-copy-scenarios');
         const pasteBtn = this._modalRoot.querySelector('#gh-paste-scenarios');
+        
+        // Розділяємо ключі для збереження та буфера обміну
+        const dataKey = 'scenarios';
+        const clipboardKey = SCENARIO_CLIPBOARD_KEY;
 
         if (saveBtn) {
             saveBtn.addEventListener('click', () => {
-                const scenarios = this._collectScenariosFromForm();
-                this._publishSet(zone, channel, { scenarios });
+                const scenarios = this._collectScenariosFromForm(); // Завжди працює коректно
+                this._publishSet(zone, channel, { [dataKey]: scenarios });
 
                 const cfg = this._getChannelState(zone, channel);
-                this._channelState[groupName(zone, channel)] = { ...cfg, scenarios };
+                this._channelState[groupName(zone, channel)] = { ...cfg, [dataKey]: scenarios };
 
                 this._flashButtonText(saveBtn, 'Збережено ✓', 'Зберегти розклад');
             });
@@ -1152,25 +1217,108 @@ class GreenhouseZoneCard extends HTMLElement {
         if (copyBtn) {
             copyBtn.addEventListener('click', () => {
                 const scenarios = this._collectScenariosFromForm();
-                localStorage.setItem(SCENARIO_CLIPBOARD_KEY, JSON.stringify(scenarios));
+                localStorage.setItem(clipboardKey, JSON.stringify(scenarios));
                 this._flashButtonText(copyBtn, 'Скопійовано ✓', 'Копіювати розклад');
             });
         }
 
         if (pasteBtn) {
             pasteBtn.addEventListener('click', () => {
-                const raw = localStorage.getItem(SCENARIO_CLIPBOARD_KEY);
+                const raw = localStorage.getItem(clipboardKey);
                 if (!raw) {
                     this._flashButtonText(pasteBtn, 'Буфер порожній', 'Вставити розклад');
                     return;
                 }
                 const scenarios = safeParseScenarios(raw);
-                this._populateTimerRows(scenarios);
-                // Не публікується одразу - підтверджується окремим "Зберегти розклад".
+                this._populateTimerRows(scenarios); // Універсально заповнює DOM
                 this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити розклад', 2000);
             });
         }
     }
+    // Авторежим - це той самий таймерний розклад (ГГ:ХХ + відсоток, 12
+    // слотів, копіювання/вставка, збереження), тільки зверху інший текст і
+    // міні-слайдер поточного показника замість опису розкладу. Слайдер -
+    // тимчасова заміна реального датчика PPFD: рухаючи його, оператор сам
+    // публікує {"umol": ...} у LogicService/bridge/sensor,
+    _renderAutoSection(zone, channel) {
+            const umol = this._lastUmolReading || 0;
+            const topHtml = `
+                <div class="gh-section-title">Поточний рівень (тимчасово вручну, потім - датчик)</div>
+                <div class="gh-field-row">
+                    <input type="range" min="0" max="2500" id="gh-auto-sensor-range" value="${umol}">
+                    <input type="number" min="0" id="gh-auto-sensor-number" value="${umol}">
+                </div>
+                <div class="gh-hint" style="margin-bottom: 20px;">
+                    Публікується в LogicService/bridge/sensor ({"umol": ...}) - тимчасова
+                    заміна реального датчика PPFD, поки він не підключений.
+                </div>
+            `;
+
+            if (!DEBUG_UMOL_SENSOR){
+                return this._renderScheduleSection(zone, channel, true);
+            }
+            return topHtml + this._renderScheduleSection(zone, channel, true);
+        }
+
+    _collectAutoScenariosFromForm() {
+        const timeInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-time');
+        const percentInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-percent');
+
+        const autoScenarios = [];
+        timeInputs.forEach((timeInput, idx) => {
+            const time = timeInput.value;
+            if (!time) return; // порожній час ігнорується, як і в таймерному розкладі
+            const percentRaw = percentInputs[idx].value;
+            autoScenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
+        });
+        return autoScenarios;
+    }
+
+    // Заповнює вже відрендерені поля значеннями з масиву (вставка з буфера) -
+    // той самий підхід, що й _populateTimerRows.
+    _populateAutoScenarioRows(autoScenarios) {
+        const hhInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-time ~ .gh-time-hh, .gh-time-input .gh-time-hh');
+        const mmInputs = this._modalRoot.querySelectorAll('.gh-time-input .gh-time-mm');
+        const timeInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-time');
+        const percentInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-percent');
+
+        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
+            const entry = autoScenarios[idx] || {};
+            const time = entry.time || '';
+            const [hh, mm] = time.split(':');
+
+            if (hhInputs[idx]) hhInputs[idx].value = hh || '';
+            if (mmInputs[idx]) mmInputs[idx].value = mm || '';
+            if (timeInputs[idx]) timeInputs[idx].value = time;
+            if (percentInputs[idx]) percentInputs[idx].value = entry.brightness !== undefined ? entry.brightness : '';
+        }
+    }
+
+    _attachAutoListeners(zone, channel) {
+            // --- Слайдер поточного рівня ---
+            const sensorRange = this._modalRoot.querySelector('#gh-auto-sensor-range');
+            const sensorNumber = this._modalRoot.querySelector('#gh-auto-sensor-number');
+            
+            if (sensorRange && sensorNumber) {
+                const sync = (value) => {
+                    sensorRange.value = value;
+                    sensorNumber.value = value;
+                };
+                const commit = (value) => {
+                    const clamped = clampUmol(value);
+                    sync(clamped);
+                    this._lastUmolReading = clamped;
+                    this._publishSensorReading(clamped);
+                };
+
+                sensorRange.addEventListener('input', () => sync(sensorRange.value));
+                sensorRange.addEventListener('change', () => commit(sensorRange.value));
+                sensorNumber.addEventListener('change', () => commit(sensorNumber.value));
+            }
+
+            // --- Слухачі авторозкладу ---
+            this._attachScheduleListeners(zone, channel, true);
+        }
 
     // Оновлення живих значень у відкритій модалці: пілюлі режиму і поля
     // активного каналу оновлюються з MQTT; редактор таймера навмисно не
