@@ -1,5 +1,5 @@
 """
-SQLite-сховище для mode/scenarios/auto_scenarios/offline_brightness/brightness
+SQLite-сховище для mode/scenarios/offline_brightness/brightness
 ПО ЗОНАХ/КАНАЛАХ.
 
 ESP тепер має ЛИШЕ стандартний brightness + on/off кластер - жодного
@@ -11,11 +11,6 @@ ESP тепер має ЛИШЕ стандартний brightness + on/off кла
 його не встановив (пряма команда /set чи тіковий розрахунок), записується
 в те саме поле. GET завжди повертає актуальне значення незалежно від
 джерела.
-
-`auto_scenarios` - розклад авторежиму, структура ідентична `scenarios`
-(HH:MM + %), але резолюція додатково коригується показником датчика
-(schedule_logic.resolve_auto_brightness) - зберігається в окремому полі,
-щоб таймерний і авто розклади не перезаписували один одного.
 """
 from __future__ import annotations
 
@@ -43,7 +38,7 @@ CREATE TABLE IF NOT EXISTS channel_config (
 """
 
 
-VALID_FIELDS = {"mode", "scenarios", "auto_scenarios", "offline_brightness", "brightness"}
+VALID_FIELDS = {"mode", "scenarios", "offline_brightness", "brightness"}
 
 _SCHEMA_LAMPS = """
 CREATE TABLE IF NOT EXISTS lamp_config (
@@ -75,28 +70,23 @@ class ChannelStore:
     def get(self, zone: int, channel: int) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT mode, scenarios, auto_scenarios, offline_brightness, brightness "
+                "SELECT mode, scenarios, offline_brightness, brightness "
                 "FROM channel_config WHERE zone=? AND channel=?",
                 (zone, channel),
             ).fetchone()
         if row is None:
             return {
-                "mode": "manual", "scenarios": [], "auto_scenarios": [],
+                "mode": "manual", "scenarios": [], 
                 "offline_brightness": 0, "brightness": 0,
             }
-        mode, scenarios_raw, auto_scenarios_raw, offline_brightness, brightness = row
+        mode, scenarios_raw, offline_brightness, brightness = row
         try:
             scenarios = json.loads(scenarios_raw)
         except json.JSONDecodeError:
             scenarios = []
-        try:
-            auto_scenarios = json.loads(auto_scenarios_raw)
-        except json.JSONDecodeError:
-            auto_scenarios = []
         return {
             "mode": mode,
             "scenarios": scenarios,
-            "auto_scenarios": auto_scenarios,
             "offline_brightness": offline_brightness,
             "brightness": brightness,
         }
@@ -113,12 +103,11 @@ class ChannelStore:
             self._conn.execute(
                 """
                 INSERT INTO channel_config
-                    (zone, channel, mode, scenarios, auto_scenarios, offline_brightness, brightness)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (zone, channel, mode, scenarios, offline_brightness, brightness)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(zone, channel) DO UPDATE SET
                     mode = excluded.mode,
                     scenarios = excluded.scenarios,
-                    auto_scenarios = excluded.auto_scenarios,
                     offline_brightness = excluded.offline_brightness,
                     brightness = excluded.brightness
                 """,
@@ -126,7 +115,6 @@ class ChannelStore:
                     zone, channel,
                     current["mode"],
                     json.dumps(current["scenarios"]),
-                    json.dumps(current["auto_scenarios"]),
                     int(current["offline_brightness"]),
                     int(current["brightness"]),
                 ),

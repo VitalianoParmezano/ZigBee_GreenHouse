@@ -11,7 +11,7 @@ MQTT-шар LogicService з ДВОМА окремими зонами відпо�
     LogicService/Zone_x_Channel_y            <- retained broadcast повного
                                                  стану після кожної зміни
     LogicService/Zone_x_Channel_y/set        <- команди запису (mode,
-                                                 scenarios, auto_scenarios,
+                                                 scenarios, ,
                                                  offline_brightness, brightness)
     LogicService/Zone_x_Channel_y/get        <- запит стану; порожній
                                                  payload -> усі поля,
