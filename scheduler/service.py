@@ -9,8 +9,7 @@
 в момент /set (див. mqtt_state._handle_set).
 'auto'   - той самий розклад (HH:MM + %), що й timer, але базовий відсоток
 корегується показником датчика (LogicService/bridge/sensor, {"umol": ...})
-через калібрувальний множник sensor.umol_multiplier - див.
-schedule_logic.resolve_auto_brightness.
+
 
 Навмисно НЕ event-driven - а періодичний ПЕРЕРАХУНОК З НУЛЯ. Тому
 пропущений такт (перезапуск сервера, збій MQTT) нічого не "губить": на
@@ -160,8 +159,8 @@ class SchedulerService:
                 return "unchanged"
 
             log.info(
-                "%s: auto -> %s%% (датчик=%.1f μmol, множник=%s)",
-                label, target, sensor_umol, settings.umol_multiplier,
+                "%s: auto -> %s%% (датчик=%.1f μmol, max_umol=%.1f)",
+                label, target, sensor_umol, max_umol
             )
             self.state.apply_timer_brightness(zone, channel, target)
             self._last_sent[key] = target

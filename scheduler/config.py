@@ -53,7 +53,6 @@ class Settings:
     log_level: str
     log_dir: str
     log_retention_days: int
-    umol_multiplier: float
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Settings":
@@ -74,7 +73,6 @@ class Settings:
             log_level=str(logging_cfg.get("level", "INFO")).upper(),
             log_dir=str(logging_cfg.get("dir", "logs")),
             log_retention_days=int(logging_cfg.get("retention_days", 7)),
-            umol_multiplier=float(sensor_cfg.get("umol_multiplier", 25.0)),
         )
 
 
