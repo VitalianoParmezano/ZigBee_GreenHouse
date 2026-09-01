@@ -51,12 +51,16 @@ class Settings:
     tick_interval_sec: int
     dry_run: bool
     log_level: str
+    log_dir: str
+    log_retention_days: int
+    umol_multiplier: float
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Settings":
         mqtt = raw.get("mqtt") or {}
         sched = raw.get("scheduler") or {}
         logging_cfg = raw.get("logging") or {}
+        sensor_cfg = raw.get("sensor") or {}
         return cls(
             mqtt_host=str(mqtt.get("host", "localhost")),
             mqtt_port=int(mqtt.get("port", 1883)),
@@ -68,6 +72,9 @@ class Settings:
             tick_interval_sec=int(sched.get("tick_interval_sec", 30)),
             dry_run=bool(sched.get("dry_run", True)),
             log_level=str(logging_cfg.get("level", "INFO")).upper(),
+            log_dir=str(logging_cfg.get("dir", "logs")),
+            log_retention_days=int(logging_cfg.get("retention_days", 7)),
+            umol_multiplier=float(sensor_cfg.get("umol_multiplier", 25.0)),
         )
 
 

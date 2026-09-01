@@ -1,22 +1,28 @@
 """
-SQLite-сховище для mode/scenarios/offline_brightness/brightness ПО
-ЗОНАХ/КАНАЛАХ.
+SQLite-сховище для mode/scenarios/auto_scenarios/offline_brightness/brightness
+ПО ЗОНАХ/КАНАЛАХ.
 
 ESP тепер має ЛИШЕ стандартний brightness + on/off кластер - жодного
 кастомного кластера немає. Тому єдине джерело правди для всього, чим
-керує LogicService (включно з РЕЗУЛЬТАТОМ таймерного режиму), - ця
+керує LogicService (включно з РЕЗУЛЬТАТОМ таймерного й авторежиму), - ця
 локальна база, а не Zigbee/Z2M.
 
-`brightness` - СПІЛЬНЕ поле для ручного і таймерного режимів: хто б його
-не встановив (пряма команда /set чи тіковий розрахунок з scenarios),
-записується в те саме поле. GET завжди повертає актуальне значення
-незалежно від джерела.
+`brightness` - СПІЛЬНЕ поле для ручного, таймерного і авто режимів: хто б
+його не встановив (пряма команда /set чи тіковий розрахунок), записується
+в те саме поле. GET завжди повертає актуальне значення незалежно від
+джерела.
+
+`auto_scenarios` - розклад авторежиму, структура ідентична `scenarios`
+(HH:MM + %), але резолюція додатково коригується показником датчика
+(schedule_logic.resolve_auto_brightness) - зберігається в окремому полі,
+щоб таймерний і авто розклади не перезаписували один одного.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 import threading
+from .config import PROJECT_ROOT, settings
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +42,15 @@ CREATE TABLE IF NOT EXISTS channel_config (
 );
 """
 
-VALID_FIELDS = {"mode", "scenarios", "offline_brightness", "brightness"}
 
+VALID_FIELDS = {"mode", "scenarios", "auto_scenarios", "offline_brightness", "brightness"}
+
+_SCHEMA_LAMPS = """
+CREATE TABLE IF NOT EXISTS lamp_config (
+    channel INTEGER PRIMARY KEY,
+    max_umol REAL NOT NULL DEFAULT 0.0
+);
+"""
 
 class ChannelStore:
     """Потокобезпечний доступ до локальної бази конфігурації каналів."""
@@ -48,24 +61,42 @@ class ChannelStore:
         with self._lock:
             self._conn.execute(_SCHEMA)
             self._conn.commit()
+            self._conn.execute(_SCHEMA_LAMPS)
+            self._conn.commit()
+
+
+            for ch in range(1, settings.channels_per_zone + 1):  
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO lamp_config (channel, max_umol) VALUES (?, ?)",
+                    (ch, 0.0),
+                )
+            self._conn.commit()
 
     def get(self, zone: int, channel: int) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT mode, scenarios, offline_brightness, brightness "
+                "SELECT mode, scenarios, auto_scenarios, offline_brightness, brightness "
                 "FROM channel_config WHERE zone=? AND channel=?",
                 (zone, channel),
             ).fetchone()
         if row is None:
-            return {"mode": "manual", "scenarios": [], "offline_brightness": 0, "brightness": 0}
-        mode, scenarios_raw, offline_brightness, brightness = row
+            return {
+                "mode": "manual", "scenarios": [], "auto_scenarios": [],
+                "offline_brightness": 0, "brightness": 0,
+            }
+        mode, scenarios_raw, auto_scenarios_raw, offline_brightness, brightness = row
         try:
             scenarios = json.loads(scenarios_raw)
         except json.JSONDecodeError:
             scenarios = []
+        try:
+            auto_scenarios = json.loads(auto_scenarios_raw)
+        except json.JSONDecodeError:
+            auto_scenarios = []
         return {
             "mode": mode,
             "scenarios": scenarios,
+            "auto_scenarios": auto_scenarios,
             "offline_brightness": offline_brightness,
             "brightness": brightness,
         }
@@ -81,11 +112,13 @@ class ChannelStore:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO channel_config (zone, channel, mode, scenarios, offline_brightness, brightness)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO channel_config
+                    (zone, channel, mode, scenarios, auto_scenarios, offline_brightness, brightness)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(zone, channel) DO UPDATE SET
                     mode = excluded.mode,
                     scenarios = excluded.scenarios,
+                    auto_scenarios = excluded.auto_scenarios,
                     offline_brightness = excluded.offline_brightness,
                     brightness = excluded.brightness
                 """,
@@ -93,6 +126,7 @@ class ChannelStore:
                     zone, channel,
                     current["mode"],
                     json.dumps(current["scenarios"]),
+                    json.dumps(current["auto_scenarios"]),
                     int(current["offline_brightness"]),
                     int(current["brightness"]),
                 ),
@@ -100,5 +134,47 @@ class ChannelStore:
             self._conn.commit()
         return current
 
+    def get_lamp_max_umol(self, channel: int) -> float:
+        """Отримує максимальні мікромолі для конкретного каналу"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT max_umol FROM lamp_config WHERE channel=?", (channel,)
+            ).fetchone()
+            return float(row[0]) if row else 200.0
+
+    def update_lamp_max_umol(self, channel: int, max_umol: float) -> None:
+        """Оновлює налаштування лампи"""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE lamp_config SET max_umol=? WHERE channel=?", 
+                (float(max_umol), channel)
+            )
+            self._conn.commit()
+
+    def update_all_lamp_max_umols(self, max_umols: dict[int, float]) -> None:
+        """Оновлює налаштування всіх ламп за один запит. max_umols - {channel: max_umol}"""
+        with self._lock:
+            for channel, max_umol in max_umols.items():
+                self._conn.execute(
+                    "UPDATE lamp_config SET max_umol=? WHERE channel=?", 
+                    (float(max_umol), channel)
+                )
+            self._conn.commit()
+
+    def get_all_lamp_max_umols(self) -> dict[int, float]:
+            """Отримує налаштування всіх ламп за один запит. Повертає {channel: max_umol}"""
+            with self._lock:
+                rows = self._conn.execute("SELECT channel, max_umol FROM lamp_config").fetchall()
+                
+                # Динамічно генеруємо словник для n каналів з дефолтним значенням 0.0
+                # Наприклад: {1: 0.0, 2: 0.0, 3: 0.0, ... n: 0.0}
+                result = {ch: 0.0 for ch in range(1, settings.channels_per_zone + 1)}
+                
+                # Перезаписуємо дефолтні нулі реальними даними з БД
+                for ch, val in rows:
+                    result[ch] = float(val)
+                    
+                return result
+            
     def close(self) -> None:
         self._conn.close()

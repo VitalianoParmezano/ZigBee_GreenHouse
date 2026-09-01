@@ -11,14 +11,19 @@ MQTT-шар LogicService з ДВОМА окремими зонами відпо�
     LogicService/Zone_x_Channel_y            <- retained broadcast повного
                                                  стану після кожної зміни
     LogicService/Zone_x_Channel_y/set        <- команди запису (mode,
-                                                 scenarios, offline_brightness,
-                                                 brightness)
+                                                 scenarios, auto_scenarios,
+                                                 offline_brightness, brightness)
     LogicService/Zone_x_Channel_y/get        <- запит стану; порожній
                                                  payload -> усі поля,
                                                  {"a":1,"b":2} або ["a","b"]
                                                  -> тільки перелічені поля.
                                                  Відповідь публікується
                                                  НАЗАД у той самий топік.
+    LogicService/bridge/sensor               <- глобальний (не по зоні)
+                                                 показник датчика:
+                                                 {"umol": 1554}. Використо-
+                                                 вується авторежимом
+                                                 (schedule_logic.resolve_auto_brightness).
 """
 from __future__ import annotations
 
@@ -85,6 +90,11 @@ class MqttState:
 
     def __init__(self, store: Optional[ChannelStore] = None) -> None:
         self.store = store or ChannelStore()
+        # Останній відомий показник датчика (μmol/m²/s) - для авторежиму.
+        # 0.0 за замовчуванням, поки не прийшло жодне повідомлення в
+        # bridge/sensor (консервативний дефолт: без даних датчика авторежим
+        # видає повний базовий відсоток з розкладу, а не занижений).
+        self.sensor_umol: float = 0.0
 
         self._client = mqtt.Client(client_id="LogicService", protocol=mqtt.MQTTv311)
         if settings.mqtt_user:
@@ -114,7 +124,12 @@ class MqttState:
         log.info("MQTT connected (rc=%s)", rc)
         client.subscribe(f"{self.CONTROL_PREFIX}/+/set")
         client.subscribe(f"{self.CONTROL_PREFIX}/+/get")
-        log.debug("Підписано на %s/+/set і %s/+/get", self.CONTROL_PREFIX, self.CONTROL_PREFIX)
+        client.subscribe(f"{self.CONTROL_PREFIX}/bridge/sensor")
+        client.subscribe(f"{self.CONTROL_PREFIX}/bridge/max_umol")
+        log.debug(
+            "Підписано на %s/+/set, %s/+/get, %s/bridge/sensor, %s/bridge/max_umol",
+            self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX,
+        )
         self._publish_startup_snapshot()
 
     def _on_disconnect(self, client, userdata, rc) -> None:
@@ -156,12 +171,45 @@ class MqttState:
         prefix = f"{self.CONTROL_PREFIX}/"
         if not msg.topic.startswith(prefix):
             return
-        rest = msg.topic[len(prefix):]  # "Zone_1_Channel_2/set" або ".../get"
+        rest = msg.topic[len(prefix):]  # "Zone_1_Channel_2/set", ".../get" або "bridge/sensor"
+
+        if rest == "bridge/sensor":
+            log.debug("Отримано bridge/sensor: %r", msg.payload)
+            self._handle_sensor_reading(msg.payload)
+            return
+
+        if rest == "bridge/max_umol":
+            print("Lol kek cheburek")
+            self._handle_max_umol_update(msg.payload)
+            return
 
         if rest.endswith("/set"):
             self._handle_set(rest[: -len("/set")], msg.payload)
         elif rest.endswith("/get"):
             self._handle_get(rest[: -len("/get")], msg.payload)
+
+    def _handle_sensor_reading(self, payload_bytes: bytes) -> None:
+        try:
+            data = json.loads(payload_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            log.warning("bridge/sensor: некоректний JSON: %r", payload_bytes)
+            return
+
+        umol = data.get("umol") if isinstance(data, dict) else None
+        if umol is None:
+            log.warning("bridge/sensor: немає ключа 'umol' у %r", data)
+            return
+
+        try:
+            self.sensor_umol = float(umol)
+        except (TypeError, ValueError):
+            log.warning("bridge/sensor: некоректне значення umol: %r", umol)
+            return
+
+        log.debug("Показник датчика оновлено: %.1f μmol", self.sensor_umol)
+
+    def get_sensor_umol(self) -> float:
+        return self.sensor_umol
 
     # ------------------------------------------------------------------ #
     def _handle_set(self, group: str, payload_bytes: bytes) -> None:
@@ -225,9 +273,48 @@ class MqttState:
 
     def get_channel_config(self, zone: int, channel: int) -> dict[str, Any]:
         return self.store.get(zone, channel)
+    # ------------------------------------------------------------------ #
+
+    def _handle_max_umol_update(self, payload_bytes: bytes) -> None:
+        # КРОК 1: Перетворюємо байти, що прийшли з MQTT, у зрозумілий Python-словник (dict)
+        try:
+            data = json.loads(payload_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            log.warning("bridge/max_umol: некоректний JSON: %r", payload_bytes)
+            return
+
+        #  Перевірака, чи прийшов саме словник (об'єкт {})
+        if not isinstance(data, dict):
+            log.warning("bridge/max_umol: очікувався JSON-об'єкт, отримано %r", data)
+            return
+
+        # З фронтенду приходить: {"max_umol_channel1": 10, "max_umol_channel2": 150}
+        # Метод .items() розбиває це на пари: 
+        # key_str = "max_umol_channel1", max_umol = 10
+        for key_str, max_umol in data.items():
+            try:
+                # Відрізаємо зайві літери. replace("max_umol_channel", "") 
+                # перетворює "max_umol_channel1" просто на "1"
+                channel_str = key_str.replace("max_umol_channel", "")
+                
+                # Робимо з тексту "1" справжнє число 1 для бази даних
+                channel = int(channel_str)
+                
+                # Робимо з 10 справжнє число з крапкою 10.0 (float)
+                max_umol_value = float(max_umol)
+                
+                # КРОК 4: Передаємо готові цифри у ваш метод збереження в SQLite
+                self.store.update_lamp_max_umol(channel, max_umol_value)
+                
+            except (ValueError, TypeError):
+                # Якщо раптом прийшло "max_umol_channelXXX": "текст", код не впаде, а просто залогує помилку
+                log.warning("bridge/max_umol: некоректне значення для ключа=%s: %r", key_str, max_umol)
+                
+        # Рапорт, що все успішно збережено
+        log.info("bridge/max_umol: успішно оновлено максимальні μmol: %s", data)
 
     # ------------------------------------------------------------------ #
-    def _publish_zigbee_brightness(self, zone: int, channel: int, brightness_pct: int) -> None:
+    def _publish_zigbee_brightness(self, zone: int, channel: int, brightness_pct: int, transition: float = 2.0) -> None:
         """Єдине, що йде в реальний zigbee2mqtt - ESP розуміє тільки це.
         Шлемо і `state`, і `brightness` явно - не покладаємось на те, що
         прошивка сама вимкне світло при brightness=0."""
@@ -235,7 +322,9 @@ class MqttState:
         group = group_name(zone, channel)
         topic = f"{base}/{group}/set"
         payload = json.dumps({
+            "state": "ON" if brightness_pct > 0 else "OFF",
             "brightness": brightness_pct,
+            "transition": transition,
         })
 
         if settings.dry_run:

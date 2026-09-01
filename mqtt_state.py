@@ -11,14 +11,19 @@ MQTT-шар LogicService з ДВОМА окремими зонами відпо�
     LogicService/Zone_x_Channel_y            <- retained broadcast повного
                                                  стану після кожної зміни
     LogicService/Zone_x_Channel_y/set        <- команди запису (mode,
-                                                 scenarios, offline_brightness,
-                                                 brightness)
+                                                 scenarios, auto_scenarios,
+                                                 offline_brightness, brightness)
     LogicService/Zone_x_Channel_y/get        <- запит стану; порожній
                                                  payload -> усі поля,
                                                  {"a":1,"b":2} або ["a","b"]
                                                  -> тільки перелічені поля.
                                                  Відповідь публікується
                                                  НАЗАД у той самий топік.
+    LogicService/bridge/sensor               <- глобальний (не по зоні)
+                                                 показник датчика:
+                                                 {"umol": 1554}. Використо-
+                                                 вується авторежимом
+                                                 (schedule_logic.resolve_auto_brightness).
 """
 from __future__ import annotations
 
@@ -30,7 +35,6 @@ from typing import Any, Optional
 import paho.mqtt.client as mqtt
 
 from .config import settings
-from .store import ChannelStore
 
 log = logging.getLogger("mqtt_state")
 
@@ -85,6 +89,11 @@ class MqttState:
 
     def __init__(self, store: Optional[ChannelStore] = None) -> None:
         self.store = store or ChannelStore()
+        # Останній відомий показник датчика (μmol/m²/s) - для авторежиму.
+        # 0.0 за замовчуванням, поки не прийшло жодне повідомлення в
+        # bridge/sensor (консервативний дефолт: без даних датчика авторежим
+        # видає повний базовий відсоток з розкладу, а не занижений).
+        self.sensor_umol: float = 0.0
 
         self._client = mqtt.Client(client_id="LogicService", protocol=mqtt.MQTTv311)
         if settings.mqtt_user:
@@ -114,7 +123,12 @@ class MqttState:
         log.info("MQTT connected (rc=%s)", rc)
         client.subscribe(f"{self.CONTROL_PREFIX}/+/set")
         client.subscribe(f"{self.CONTROL_PREFIX}/+/get")
-        log.debug("Підписано на %s/+/set і %s/+/get", self.CONTROL_PREFIX, self.CONTROL_PREFIX)
+        client.subscribe(f"{self.CONTROL_PREFIX}/bridge/sensor")
+        client.subscribe(f"{self.CONTROL_PREFIX}/bridge/max_umol")
+        log.debug(
+            "Підписано на %s/+/set, %s/+/get, %s/bridge/sensor",
+            self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX,
+        )
         self._publish_startup_snapshot()
 
     def _on_disconnect(self, client, userdata, rc) -> None:
@@ -156,12 +170,47 @@ class MqttState:
         prefix = f"{self.CONTROL_PREFIX}/"
         if not msg.topic.startswith(prefix):
             return
-        rest = msg.topic[len(prefix):]  # "Zone_1_Channel_2/set" або ".../get"
+        rest = msg.topic[len(prefix):]  # "Zone_1_Channel_2/set", ".../get" або "bridge/sensor"
+
+        if rest == "bridge/sensor":
+            log.debug("kek lol orbitol")
+            self._handle_sensor_reading(msg.payload)
+            return
+
+        if rest == "bridge/max_umol":
+            log.debug("Lol kek cheburek")
+            self._handle_set_max_umol(msg.payload)
+            return
 
         if rest.endswith("/set"):
             self._handle_set(rest[: -len("/set")], msg.payload)
         elif rest.endswith("/get"):
             self._handle_get(rest[: -len("/get")], msg.payload)
+        else:
+            log.warning("Отримано повідомлення в невідомий топік: %s (payload: %s)", msg.topic, msg.payload)
+
+    def _handle_sensor_reading(self, payload_bytes: bytes) -> None:
+        try:
+            data = json.loads(payload_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            log.warning("bridge/sensor: некоректний JSON: %r", payload_bytes)
+            return
+
+        umol = data.get("umol") if isinstance(data, dict) else None
+        if umol is None:
+            log.warning("bridge/sensor: немає ключа 'umol' у %r", data)
+            return
+
+        try:
+            self.sensor_umol = float(umol)
+        except (TypeError, ValueError):
+            log.warning("bridge/sensor: некоректне значення umol: %r", umol)
+            return
+
+        log.debug("Показник датчика оновлено: %.1f μmol", self.sensor_umol)
+
+    def get_latest_umol(self) -> float:
+        return self.sensor_umol
 
     # ------------------------------------------------------------------ #
     def _handle_set(self, group: str, payload_bytes: bytes) -> None:
@@ -206,6 +255,33 @@ class MqttState:
         topic = f"{self.CONTROL_PREFIX}/{group}/get"
         self._client.publish(topic, json.dumps(response))
         log.debug("GET %s (поля=%s) -> %s", group, requested or "усі", response)
+
+    def _handle_set_max_umol(self, payload_bytes: bytes) -> None:
+            log.debug("bridge/max_umol: отримано payload=%r", payload_bytes)
+            try:
+                data = json.loads(payload_bytes.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                log.warning("bridge/max_umol: некоректний JSON: %r", payload_bytes)
+                return
+
+            if not isinstance(data, dict):
+                log.warning("bridge/max_umol: очікувався JSON-об'єкт, отримано %r", data)
+                return
+
+            for key_str, max_umol in data.items():
+                try:
+                    # Відрізаємо текст, щоб лишилася тільки цифра (наприклад, "1")
+                    channel_str = key_str.replace("max_umol_channel", "")
+                    
+                    channel = int(channel_str)
+                    max_umol_value = float(max_umol)
+                    
+                    self.store.update_lamp_max_umol(channel, max_umol_value)
+                    
+                except (ValueError, TypeError):
+                    log.warning("bridge/max_umol: некоректне значення для ключа=%s: %r", key_str, max_umol)
+                    
+            log.info("bridge/max_umol: успішно оновлено максимальні μmol: %s", data)
 
     def _broadcast(self, group: str, cfg: dict[str, Any]) -> None:
         """Retained-повідомлення повного стану в базовий топік (без /set, /get) -

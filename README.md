@@ -1,88 +1,35 @@
-# LogicService
+# lighting-scheduler (LogicService)
 
-Пайтон код який в собі несе усю логіку, .
+Python-сервіс таймерного розкладу освітлення. Детальна архітектура - у
+коментарях на початку `scheduler/mqtt_state.py`.
 
-## Ключове архітектурне рішення
+---
 
-ESP має стандартний brightness-кластер (genLevelCtrl/genOnOff), кластер бут статусу та оффлайн яскравості.
+Перед першим запуском:
+1. У `docker-compose.yml` постав правильний `devices:` шлях для
+   Zigbee-координатора в сервісі `zigbee2mqtt` (`ls /dev/serial/by-id/`,
+   щоб знайти стабільний шлях, а не `/dev/ttyUSB0`, який може зміститись
+   після перезавантаження).
+2. `lighting-scheduler/config.yaml` - `mqtt.host: mosquitto` (ім'я
+   сервісу, НЕ `localhost` - це правило Docker-мереж, не специфіка цього
+   проєкту).
+3. `TZ=Europe/Kyiv` у кожному сервісі - постав свій часовий пояс, інакше
+   контейнери рахуватимуть час за UTC, і резолюція розкладу поїде.
 
-- Z2M/ESP розуміють тільки `brightness`/`state` - звичайна zigbee-лампа.
-- `mode`, `scenarios`, `offline_brightness` живуть ЛИШЕ в локальній
-  SQLite цього сервісу (`scheduler_state.sqlite3`) - для них немає
-  жодного бекенду ні в прошивці, ні в Z2M.
-- Керування ними йде через ВЛАСНИЙ топік-простір `lighting-scheduler/*`,
-  а не через `zigbee2mqtt/*` - Z2M про ці дані взагалі нічого не знає.
+Весь каталог `lighting-scheduler/` змонтований у контейнер `logicservice`
+як bind volume (`- ./lighting-scheduler:/app` у `docker-compose.yml`) -
+код, `config.yaml` і `scheduler_state.sqlite3` (з'явиться сама після
+першого запуску) лежать РАЗОМ, прямо на хості. Правиш код на хості -
+контейнер підхоплює зміни без пересборки образу (`docker compose restart
+logicservice` - і досить, `python main.py` перечитає файли заново).
 
-```
-Картка (HA) --{"mode":"timer"}--> lighting-scheduler/Zone_1_Channel_2/set
-                                          |
-                                   SQLite (mode+scenarios+offline_brightness)
-                                          |
-                                   резолюція (schedule_logic.py)
-                                          |
-                                   zigbee2mqtt/Zone_1_Channel_2/set {"brightness": X}
-                                          |
-                                        ESP32 (тільки brightness-кластер)
-```
-
-Підтверджений (не оптимістичний) стан публікується назад у
-`lighting-scheduler/Zone_1_Channel_2` (retained) - картка читає звідти.
-
-## Структура
-
-- `scheduler/config.py` - налаштування з `config.yaml` (НЕ env).
-- `scheduler/store.py` - SQLite: mode/scenarios/offline_brightness по
-  зонах/каналах. Єдине джерело правди для розкладу.
-- `scheduler/mqtt_state.py` - два незалежні MQTT-простори: керування
-  (`lighting-scheduler/*`, наше) і реальні команди (`zigbee2mqtt/*/set`,
-  для ESP).
-- `scheduler/schedule_logic.py` - чиста логіка резолюції (без MQTT).
-- `scheduler/service.py` - тіковий цикл: читає конфіг з SQLite, рахує
-  цільову яскравість, публікує в zigbee2mqtt, якщо змінилось.
-- `demo_resolve.py` - офлайн-демо без MQTT і без конфіга.
-- `main.py` - точка входу (потрібен живий брокер).
-
-## Швидкий перегляд без брокера
-
-```bash
-python demo_resolve.py
-python demo_resolve.py --now 21:15 --table
-```
-
-## Запуск
+## Запуск без Docker
 
 ```bash
 python -m venv venv
 source venv/bin/activate         # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp config.example.yaml config.yaml   # відредагувати mqtt.host/port/user
+cp config.example.yaml config.yaml   # postaв mqtt.host: localhost (не mosquitto!)
 python main.py                       # dry_run: true за замовчуванням
-```
-
-`scheduler_state.sqlite3` створюється автоматично поруч з `main.py` при
-першому запуску - це і є ваша база розкладів, тримайте її локально
-(бекапте, якщо не хочете втратити налаштовані сценарії).
-
-## Оновлення картки (greenhouse-zone-card.js)
-
-Публікацію scenarios/mode потрібно перенаправити з
-`zigbee2mqtt/<group>/set` на `lighting-scheduler/<group>/set` - Z2M
-більше не бере участі в цих даних. Читання поточного стану - з
-`lighting-scheduler/<group>` (retained), а не з кешу групи Z2M.
-
-
-## Структура файлової системи проекту всередині контейнеру
-
-```
-app/
-  main.py
-  config.yaml
-  scheduler/
-    __init__.py
-    config.py
-    store.py
-    mqtt_state.py
-    schedule_logic.py
-    service.py
 ```
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional
+from scheduler.store import ChannelStore
 
 
 @dataclass(frozen=True)
@@ -88,3 +89,66 @@ def next_change(points: list[ScenarioPoint], now_minutes: int) -> Optional[Scena
         if p.minutes > now_minutes:
             return p
     return points[0] if points else None
+
+
+# ---------------------------------------------------------------------------
+# Авторежим: розклад той самий (HH:MM + %), але результат коригується за
+# показником датчика (μmol/m²/s, PPFD) через калібрувальний множник
+# (umol_multiplier з config.yaml, sensor.umol_multiplier).
+# ---------------------------------------------------------------------------
+
+def percent_to_umol(percent: float, umol_multiplier: float) -> float:
+    """Відсоток яскравості (0..100) -> μmol/m²/s: percent * umol_multiplier."""
+    return percent * umol_multiplier
+
+
+def umol_to_percent(umol: float, umol_multiplier: float) -> float:
+    """Обернена операція: μmol/m²/s -> відсоток яскравості: umol / umol_multiplier."""
+    if umol_multiplier == 0:
+        return 0.0
+    return umol / umol_multiplier
+
+
+def resolve_auto_brightness(
+    points: list[ScenarioPoint],
+    now_minutes: int,
+    sensor_lux: float,
+    max_umol: float,
+) -> Optional[int]:
+    """
+    Авторежим: базовий відсоток береться з розкладу (той самий алгоритм,
+    що й у таймері - resolve_target_brightness), переводиться в μmol за
+    калібрувальним множником, і з нього віднімається те, що вже реально
+    показує датчик (сонце, сусідні лампи тощо) - різниця конвертується
+    назад у відсоток і є тим, що треба доввімкнути штучним світлом.
+
+    Приклад: розклад каже "50%" о цій годині, множник 25.0 -> цільові
+    50 * 25 = 1250 μmol. Датчик показує 300 μmol (частково є природне
+    світло) -> треба ще (1250 - 300) / 25 = 38% штучного світла, а не
+    повні 50%. Якщо датчик уже показує 1250+ μmol - результат обрізається
+    до 0 (світла й так достатньо, доввімкнювати нічого не треба).
+
+    Повертає None, якщо розклад порожній (як і resolve_target_brightness).
+    """
+
+    sensor_umol = sensor_lux / 69  # Переводимо lux -> μmol/m²/s (PPFD) за емпіричною формулою
+
+    user_percent = resolve_target_brightness(points, now_minutes)
+    if user_percent is None:
+        return None
+
+    
+
+    target_umol = user_percent * max_umol / 100  # percent * umol_multiplier
+    diff_umol = target_umol - sensor_umol
+
+    if diff_umol <= 0:
+        return 0
+
+    target_percent = diff_umol / max_umol * 100  # μmol -> percent
+
+    print(f"DEBUG: now={now_minutes} min, user_percent={user_percent}, sensor_lux={sensor_lux:.1f}, "
+          f"sensor_umol={sensor_umol:.1f}, target_umol={target_umol:.1f}, diff_umol={diff_umol:.1f}, target_percent={target_percent:.1f}")
+
+    return int(round(target_percent))
+

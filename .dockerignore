@@ -1,21 +1,12 @@
-# Git та IDE
-/.git
-/.vscode
-
-# Віртуальне середовище
-/venv
-
-# Кеш Python
 __pycache__/
-*.py[cod]
+*.pyc
+venv/
+.venv/
 
-# Бази даних стану
-*.sqlite3
-*.db
-
-# Конфігурації (залишаємо тільки config.example.yaml)
+# Дані й секрети НЕ мають потрапляти в образ - вони приходять з
+# bind-mounted volume в docker-compose.yml, не з COPY при білді.
+scheduler_state.sqlite3
 config.yaml
-
-# Документація та Docker-файли
-Dockerfile
-.dockerignore
+logs/
+.env
+.git/
