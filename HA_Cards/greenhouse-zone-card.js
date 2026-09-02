@@ -77,6 +77,11 @@ class GreenhouseZoneCard extends HTMLElement {
         // Прибирається лише повідомленням status: 'online' для того ж device,
         // не залежить від закриття тоста.
         this._offlineDevices = {};
+
+        // Стосується мікромолей
+        this._unsubMaxUmol = null;
+        this._maxUmolState = {};
+
         this._toastStackRoot = null;
         this._offlineListModalRoot = null;
         // Тимчасова заміна реального датчика PPFD: локальне (лише в цій
@@ -139,8 +144,25 @@ class GreenhouseZoneCard extends HTMLElement {
         } catch (err) {
             console.error('[GreenhouseZoneCard] Не вдалось підписатись на bridge/request:', err);
         }
+
+        try {
+            this._unsubMaxUmol = await this._hass.connection.subscribeMessage(
+                (message) => this._onMaxUmolMessage(message),
+                { type: 'mqtt/subscribe', topic: `${CONTROL_PREFIX}/bridge/max_umol` }
+            );
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Не вдалось підписатись на max_umol:', err);
+        }
+
     }
 
+    // Обробка повідомлення з LogicService/Zone_x_Channel_y, яке містить JSON-об'єкт виду:
+    // {
+    //   "mode": "manual",
+    //   "scenarios": [...],
+    //   "brightness": 75,
+    //   "state": "ON"
+    // }
     _onLogicServiceMessage(message) {
         const prefix = `${CONTROL_PREFIX}/`;
         if (!message.topic.startsWith(prefix)) return;
@@ -195,6 +217,26 @@ class GreenhouseZoneCard extends HTMLElement {
 
         this._showToast(status, zone, device);
         this._updateOfflineBadge();
+    }
+
+    // Обробка повідомлення з LogicService/bridge/max_umol, яке містить JSON-об'єкт виду:
+    // {
+    //   "max_umol_channel1": 123,
+    //   "max_umol_channel2": 456,
+    //   "max_umol_channel3": 789
+    // }
+    // Використовується для оновлення глобального показника PPFD (μmol/m²/s) у картці, а також для синхронізації значень у модальному вікні, якщо воно відкрите.
+    _onMaxUmolMessage(message) {
+        try {
+            this._maxUmolState = JSON.parse(message.payload);
+            
+            // Якщо модалка відкрита, оновлюємо живі значення (щоб одразу показати нові цифри)
+            if (this._modalState && this._modalState.open) {
+                this._refreshChannelSpecificValues();
+            }
+        } catch (err) {
+            console.warn('[GreenhouseZoneCard] Некоректний JSON у max_umol:', message.payload);
+        }
     }
 
     _getChannelState(zone, channel) {
@@ -735,51 +777,62 @@ class GreenhouseZoneCard extends HTMLElement {
                 }
                 .gh-scenario-row {
                     display: grid;
-                    grid-template-columns: 24px 1fr 90px;
-                    align-items: center;
-                    gap: 10px;
-                    margin-bottom: 6px;
-                }
-                .gh-auto-scenario-row {
-                    display: grid;
-                    grid-template-columns: 24px 90px 1fr 70px;
+                    grid-template-columns: 24px 1fr 70px 70px;
                     align-items: center;
                     gap: 8px;
                     margin-bottom: 6px;
                 }
+                
+                .gh-slot-calc {
+                    height: 34px;
+                    box-sizing: border-box;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: var(--primary-color, #03a9f4);
+                    background: rgba(255, 255, 255, 0.05);
+                    padding: 0 4px;
+                    border-radius: 8px;
+                    text-align: center;
+                    border: 1px solid rgba(255, 255, 255, 0.1);
+                }
+
                 .gh-scenario-index {
                     font-size: 12px;
                     opacity: 0.5;
                     text-align: right;
                 }
-                .gh-scenario-row input[type="number"],
-                .gh-auto-scenario-row input[type="number"] {
-                    padding: 6px 8px;
+                .gh-scenario-row input[type="number"] {
+                    height: 34px;
+                    box-sizing: border-box;
+                    padding: 0 8px;
                     border-radius: 8px;
                     border: 1px solid rgba(255, 255, 255, 0.2);
                     background: rgba(255, 255, 255, 0.06);
                     color: var(--primary-text-color);
-                    width: 100%;
-                    box-sizing: border-box;
+                    font-size: 14px;
                 }
                 .gh-time-input {
+                    height: 34px;
+                    box-sizing: border-box;
                     display: flex;
                     align-items: center;
                     justify-content: center;
                     gap: 4px;
-                    padding: 4px 6px;
+                    padding: 0 6px;
                     border-radius: 8px;
                     border: 1px solid rgba(255, 255, 255, 0.2);
                     background: rgba(255, 255, 255, 0.06);
-                    box-sizing: border-box;
                 }
                 .gh-time-part {
                     width: 28px;
-                    padding: 4px 0;
+                    padding: 0;
                     border: none;
                     background: transparent;
                     color: var(--primary-text-color);
-                    font-size: 16px;
+                    font-size: 14px;
                     font-variant-numeric: tabular-nums;
                     text-align: center;
                     box-sizing: border-box;
@@ -1145,6 +1198,7 @@ class GreenhouseZoneCard extends HTMLElement {
     // часові мітки і "приклеюють" значення до них
     // Універсальний рендер розкладу
     _renderScheduleSection(zone, channel, isAuto = false) {
+        const maxUmol = this._maxUmolState ? (this._maxUmolState[`max_umol_channel${channel}`] || 0) : 0;
         const cfg = this._getChannelState(zone, channel);
         // Визначаємо, з якого ключа брати дані
         const dataKey = 'scenarios';
@@ -1156,6 +1210,9 @@ class GreenhouseZoneCard extends HTMLElement {
             const time = existing.time || '';
             const brightness = existing.brightness !== undefined ? existing.brightness : '';
             const [hh, mm] = time.split(':');
+
+            // Рахую значення мікромолей для цього конкретного рядка
+            const rowCalc = brightness !== '' ? Math.round((brightness * maxUmol) / 100) : 0;
 
             rowsHtml += `
                 <div class="gh-scenario-row">
@@ -1169,6 +1226,7 @@ class GreenhouseZoneCard extends HTMLElement {
                         <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${time}">
                     </div>
                     <input type="number" data-slot="${idx}" class="gh-slot-percent" min="0" max="100" placeholder="%" value="${brightness}">
+                    <div class="gh-slot-calc" id="gh-calc-slot-${idx}">${rowCalc}</div>
                 </div>
             `;
         }
@@ -1190,6 +1248,22 @@ class GreenhouseZoneCard extends HTMLElement {
         `;
     }
 
+    // Перераховує колонку мікромолей для всіх видимих рядків розкладу за
+    // поточним max_umol каналу. Читає % прямо з полів у DOM (не з cfg), тож
+    // безпечно викликати і по кожному натиску клавіші, і при новому
+    // повідомленні з LogicService/bridge/max_umol.
+    _recalcUmolColumn(channel) {
+        if (!this._modalRoot) return;
+        const maxUmol = this._maxUmolState ? (this._maxUmolState[`max_umol_channel${channel}`] || 0) : 0;
+
+        this._modalRoot.querySelectorAll('.gh-slot-percent').forEach((input, idx) => {
+            const calcEl = this._modalRoot.querySelector(`#gh-calc-slot-${idx}`);
+            if (!calcEl) return;
+            const percent = input.value === '' ? 0 : clampPercent(input.value);
+            calcEl.textContent = Math.round((percent * maxUmol) / 100);
+        });
+    }
+
     // Універсальні слухачі для розкладу
     _attachScheduleListeners(zone, channel, isAuto = false) {
         this._attachTimeInputListeners();
@@ -1201,6 +1275,10 @@ class GreenhouseZoneCard extends HTMLElement {
         // Розділяємо ключі для збереження та буфера обміну
         const dataKey = 'scenarios';
         const clipboardKey = SCENARIO_CLIPBOARD_KEY;
+
+        this._modalRoot.querySelectorAll('.gh-slot-percent').forEach((input) => {
+            input.addEventListener('input', () => this._recalcUmolColumn(channel));
+        });
 
         if (saveBtn) {
             saveBtn.addEventListener('click', () => {
@@ -1231,6 +1309,7 @@ class GreenhouseZoneCard extends HTMLElement {
                 }
                 const scenarios = safeParseScenarios(raw);
                 this._populateTimerRows(scenarios); // Універсально заповнює DOM
+                this._recalcUmolColumn(channel);
                 this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити розклад', 2000);
             });
         }
@@ -1348,6 +1427,8 @@ class GreenhouseZoneCard extends HTMLElement {
                 range.value = cfg.brightness;
                 number.value = cfg.brightness;
             }
+        } else if (zoneMode === 'timer' || zoneMode === 'auto') {
+            this._recalcUmolColumn(activeChannel);
         }
     }
 
