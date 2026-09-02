@@ -153,10 +153,12 @@ class SchedulerService:
                 log.debug("%s: авто-резолюція не дала результату (не мало б статись)", label)
                 return "skipped"
 
+# Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
+# У випадку з приєднанням нових пристроїв - вони не отримають команду 
             key = (zone, channel)
-            if self._last_sent.get(key) == target:
-                log.debug("%s: без змін (%s%%, датчик=%.1f μmol)", label, target, sensor_umol)
-                return "unchanged"
+            # if self._last_sent.get(key) == target:
+            #     log.debug("%s: без змін (%s%%, датчик=%.1f μmol)", label, target, sensor_umol)
+            #     return "unchanged"
 
             log.info(
                 "%s: auto -> %s%% (датчик=%.1f μmol, max_umol=%.1f)",
@@ -180,10 +182,12 @@ class SchedulerService:
             log.debug("%s: резолюція не дала результату (не мало б статись)", label)
             return "skipped"
 
+# Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
+# У випадку з приєднанням нових пристроїв - вони не отримають команду 
         key = (zone, channel)
-        if self._last_sent.get(key) == target:
-            log.debug("%s: без змін (%s%%)", label, target)
-            return "unchanged"
+        # if self._last_sent.get(key) == target:
+        #     log.debug("%s: без змін (%s%%)", label, target)
+        #     return "unchanged"
 
         nxt = next_change(points, now_minutes)
         log.info(
