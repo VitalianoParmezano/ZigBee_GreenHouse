@@ -30,7 +30,7 @@ void light_sensor_init(void){
 }
 
 uint16_t light_sensor_get_value(void){
-    uint8_t send_data[1] = {0b00100000}; // Адреса регістру для читання даних
+    uint8_t send_data[1] = {SENSOR_ADDR_START_MEASUREMENT}; // Адреса регістру для читання даних
     uint8_t receive_data[DATA_LENGTH]; // Буфер для отримання даних
 
     esp_err_t err = i2c_master_transmit_receive(lux_meter_handle, send_data, sizeof(send_data),

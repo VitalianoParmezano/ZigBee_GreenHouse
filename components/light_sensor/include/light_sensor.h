@@ -14,6 +14,8 @@
 
 #define DATA_LENGTH 2                           /*!< Data length of the sensor data register. Кількість байт*/
 
+#define SENSOR_ADDR_START_MEASUREMENT  0b00010000
+
 
 void light_sensor_init(void);
 
