@@ -227,7 +227,7 @@ const definition = {
     zigbeeModel: ['Greenhouse_Controller_v1'],
     model: 'Greenhouse_Controller_v1',
     vendor: 'ESV',
-    description: 'Контролер освітлення теплиці з таймерними сценаріями по каналах',
+    description: 'Контролер освітлення теплиці',
 
     meta: { multiEndpoint: true },
 

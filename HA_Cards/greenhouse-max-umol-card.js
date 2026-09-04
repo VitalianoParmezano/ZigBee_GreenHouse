@@ -11,6 +11,7 @@ const TOPIC = 'LogicService/bridge/max_umol';
 const TOPIC_SENSOR = 'LogicService/bridge/sensor';
 const CHANNELS = [1, 2, 3];
 const LUX_TO_UMOL_DIVIDER = 69; // Коефіцієнт для перетворення lux в μmol/m²/s
+const NUMBERS_AFTER_COMMA_SENSOR_VALUE = 2;
 
 function clampUmol(value) {
     const n = Number(value);
@@ -98,14 +99,13 @@ class GreenhouseMaxUmolCard extends HTMLElement {
             return;
         }
 
-        // Змініть 'parsed.value' на реальний ключ з вашого JSON
-        const val = parsed.value !== undefined ? parsed.value : parsed.umol; 
+        const val = parsed.lux ?? 0; 
         
         if (val !== undefined) {
             this._sensorValue = clampUmol(val);
             const sensorEl = this.querySelector('#ghmu-sensor-val');
             if (sensorEl) {
-                sensorEl.textContent = this._sensorValue / LUX_TO_UMOL_DIVIDER;
+                sensorEl.textContent = (this._sensorValue / LUX_TO_UMOL_DIVIDER).toFixed(NUMBERS_AFTER_COMMA_SENSOR_VALUE);
             }
         }
     }
@@ -194,7 +194,7 @@ class GreenhouseMaxUmolCard extends HTMLElement {
         <div class="ghmu-sensor-card">
             <div class="ghmu-sensor-label">Поточний рівень:</div>
             <div class="ghmu-sensor-data">
-                <span id="ghmu-sensor-val">${this._sensorValue / LUX_TO_UMOL_DIVIDER}</span>
+                <span id="ghmu-sensor-val">${(this._sensorValue / LUX_TO_UMOL_DIVIDER).toFixed(NUMBERS_AFTER_COMMA_SENSOR_VALUE)}</span>
                 <span class="ghmu-unit" style="opacity: 0.8;">μmol/m²/s</span>
             </div>
         </div>

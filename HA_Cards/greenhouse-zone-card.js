@@ -258,12 +258,12 @@ class GreenhouseZoneCard extends HTMLElement {
 
     // Глобальний показник (не по зоні/каналу) - тимчасова заміна реального
     // датчика PPFD, поки він не підключений.
-    async _publishSensorReading(umol) {
+    async _publishSensorReading(lux) {
         if (!this._hass) return;
         try {
             await this._hass.callService('mqtt', 'publish', {
                 topic: `${CONTROL_PREFIX}/bridge/sensor`,
-                payload: JSON.stringify({ umol }),
+                payload: JSON.stringify({ lux }),
             });
         } catch (err) {
             console.error('[GreenhouseZoneCard] Помилка публікації сенсора:', err);
@@ -1318,17 +1318,17 @@ class GreenhouseZoneCard extends HTMLElement {
     // слотів, копіювання/вставка, збереження), тільки зверху інший текст і
     // міні-слайдер поточного показника замість опису розкладу. Слайдер -
     // тимчасова заміна реального датчика PPFD: рухаючи його, оператор сам
-    // публікує {"umol": ...} у LogicService/bridge/sensor,
+    // публікує {"lux": ...} у LogicService/bridge/sensor,
     _renderAutoSection(zone, channel) {
-            const umol = this._lastUmolReading || 0;
+            const lux = this._lastUmolReading || 0;
             const topHtml = `
                 <div class="gh-section-title">Поточний рівень (тимчасово вручну, потім - датчик)</div>
                 <div class="gh-field-row">
-                    <input type="range" min="0" max="2500" id="gh-auto-sensor-range" value="${umol}">
-                    <input type="number" min="0" id="gh-auto-sensor-number" value="${umol}">
+                    <input type="range" min="0" max="2500" id="gh-auto-sensor-range" value="${lux}">
+                    <input type="number" min="0" id="gh-auto-sensor-number" value="${lux}">
                 </div>
                 <div class="gh-hint" style="margin-bottom: 20px;">
-                    Публікується в LogicService/bridge/sensor ({"umol": ...}) - тимчасова
+                    Публікується в LogicService/bridge/sensor ({"lux": ...}) - тимчасова
                     заміна реального датчика PPFD, поки він не підключений.
                 </div>
             `;
