@@ -8,8 +8,9 @@
 #define ESP_ZB_PRIMARY_CHANNEL_MASK     ESP_ZB_TRANSCEIVER_ALL_CHANNELS_MASK /* Zigbee primary channel mask use in the example */
 
 /* Basic manufacturer information */
-#define ESP_MANUFACTURER_NAME "\x09""ESPRESSIF"      /* Customized manufacturer name */
-#define ESP_MODEL_IDENTIFIER "\x07"CONFIG_IDF_TARGET /* Customized model identifier */
+#define ESP_MANUFACTURER_NAME "\x03""ESV"                   /* Customized manufacturer name */
+#define ESP_MODEL_IDENTIFIER "\x16""GreenHouse_LightSensor"   /* Customized model identifier */
+
 
 #define ESP_ZB_ZED_CONFIG()                                         \
     {                                                               \

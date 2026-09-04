@@ -45,6 +45,22 @@ uint16_t light_sensor_get_value(void){
     return lux_value;
 }
 
+uint16_t light_sensor_get_value_fast(void){
+    uint8_t send_data[1] = {0b00010011}; // Адреса регістру для читання даних
+    uint8_t receive_data[DATA_LENGTH]; // Буфер для отримання даних
+
+    esp_err_t err = i2c_master_transmit_receive(lux_meter_handle, send_data, sizeof(send_data),
+        receive_data, sizeof(receive_data), I2C_MASTER_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        printf("I2C communication error: %d, %s\n", err, esp_err_to_name(err));
+        return 0; // Повернення помилки
+    }
+
+    uint16_t lux_value = (receive_data[0] << 8) | receive_data[1]; // Об'єднання двох байтів у 16-бітне значення
+
+    return lux_value;
+}
+
 void light_sensor_power_on(void){
     uint8_t power_on_reg[1] = {SENSOR_POWER_ON_ADDR}; // Адреса регістру "power on"
     esp_err_t err = i2c_master_transmit(lux_meter_handle, power_on_reg, sizeof(power_on_reg), I2C_MASTER_TIMEOUT_MS);

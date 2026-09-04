@@ -26,9 +26,13 @@ static const char *TAG = "MAIN";
 
 // Конвертація сирих люксів у формат ZCL MeasuredValue: 10000*log10(Lux)+1
 static uint16_t lux_to_zigbee_value(uint16_t lux) {
-    if (lux == 0) return 0x0000;
-    float zcl_value = 10000.0f * log10f((float)lux) + 1.0f;
-    if (zcl_value > 65534.0f) return 0xFFFE;
+    //if (lux == 0) return 0x0000;
+    
+    float lux_float = (float)lux / 1.2f;
+    
+    float zcl_value = 10000.0f * log10f(lux_float) + 1.0f;
+    
+    // if (zcl_value > 65534.0f) return 0xFFFE;
     return (uint16_t)zcl_value;
 }
 
@@ -147,8 +151,9 @@ static void light_sensor_update_task(void *pvParameters)
 {
     for (;;) {
         uint16_t lux = light_sensor_get_value();               // реальне читання з датчика (раз на 30с)
-        uint16_t real_lux_value = lux / 1.2f;
-        uint16_t zigbee_value = lux_to_zigbee_value(real_lux_value);       // конвертація в формат ZCL
+        // uint16_t real_lux_value = lux / 1.2f;
+        uint16_t zigbee_value = lux_to_zigbee_value(lux);       // конвертація в формат ZCL
+
 
         ESP_LOGI(TAG, "Lux value: %d, Zigbee MeasuredValue: %d", lux, zigbee_value);
 
@@ -157,7 +162,7 @@ static void light_sensor_update_task(void *pvParameters)
                                       ESP_ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT,            // кластер
                                       ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,                           // роль (сервер)
                                       ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID,// id атрибута
-                                      &real_lux_value,                                            // нове значення
+                                      &zigbee_value,                                            // нове значення
                                       false);                                                   // check_access — не перевіряти права запису
         esp_zb_lock_release();
 
@@ -179,4 +184,14 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_zb_platform_config(&config));
     xTaskCreate(esp_zb_task, "Zigbee_main", 4096, NULL, 5, NULL);
     xTaskCreate(light_sensor_update_task, "light_upd", 2048, NULL, 4, NULL);
+    // while (1) {
+    //     uint16_t lux = light_sensor_get_value();
+    //     printf("Lux value 1 lx resolution: %d\n", lux);
+    //     vTaskDelay(pdMS_TO_TICKS(1000));
+    //     uint16_t lux_fast = light_sensor_get_value_fast();
+    //     printf("Lux value 4 lx resolution: %d\n", lux_fast);
+    //     printf("\n");
+    //     vTaskDelay(pdMS_TO_TICKS(1000));
+    // }
+
 }

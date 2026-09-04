@@ -20,5 +20,6 @@
 void light_sensor_init(void);
 
 uint16_t light_sensor_get_value(void);
+uint16_t light_sensor_get_value_fast(void);
 void light_sensor_power_on(void);
 void light_sensor_power_off(void);
