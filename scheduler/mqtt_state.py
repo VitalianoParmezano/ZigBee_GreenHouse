@@ -21,9 +21,19 @@ MQTT-шар LogicService з ДВОМА окремими зонами відпо�
                                                  НАЗАД у той самий топік.
     LogicService/bridge/sensor               <- глобальний (не по зоні)
                                                  показник датчика:
-                                                 {"umol": 1554}. Використо-
+                                                 {"lux": 1554}. Використо-
                                                  вується авторежимом
                                                  (schedule_logic.resolve_auto_brightness).
+
+Читання сенсору:
+ Сервіс слухає zigbee2mqtt/+ , тобто усі пристрої і якщо якийсь із них присилає JSON з ключем "illuminance",
+то сервіс бере це значення і публікує у LogicService/bridge/sensor {"lux": 1234}.
+
+ По-факту виконує роль пересилки. Пізніше якщо додавати нові датчики: у LogicService/bridge/sensor 
+слати усереднене значення (якщо уся теплиця працює за одним авторежимом) або розширити топіки на LogicService/bridge/sensor/zone1, zone2 і т.д.
+але це вже інша історія, для цього треба буде створювати новий екстеншин і кожному сенсору присвоювати зону.
+
+
 """
 from __future__ import annotations
 
@@ -87,6 +97,7 @@ def _with_derived_state(cfg: dict[str, Any]) -> dict[str, Any]:
 
 class MqttState:
     CONTROL_PREFIX = "LogicService"
+    ZIGBEE_PREFIX = "zigbee2mqtt"
 
     def __init__(self, store: Optional[ChannelStore] = None) -> None:
         self.store = store or ChannelStore()
@@ -94,7 +105,7 @@ class MqttState:
         # 0.0 за замовчуванням, поки не прийшло жодне повідомлення в
         # bridge/sensor (консервативний дефолт: без даних датчика авторежим
         # видає повний базовий відсоток з розкладу, а не занижений).
-        self.sensor_umol: float = 0.0
+        self.sensor_lux: float = 0.0
 
         self._client = mqtt.Client(client_id="LogicService", protocol=mqtt.MQTTv311)
         if settings.mqtt_user:
@@ -126,9 +137,10 @@ class MqttState:
         client.subscribe(f"{self.CONTROL_PREFIX}/+/get")
         client.subscribe(f"{self.CONTROL_PREFIX}/bridge/sensor")
         client.subscribe(f"{self.CONTROL_PREFIX}/bridge/max_umol")
+        client.subscribe(f"{self.ZIGBEE_PREFIX}/+")
         log.debug(
-            "Підписано на %s/+/set, %s/+/get, %s/bridge/sensor, %s/bridge/max_umol",
-            self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX,
+            "Підписано на %s/+/set, %s/+/get, %s/bridge/sensor, %s/bridge/max_umol, %s/+",
+            self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.CONTROL_PREFIX, self.ZIGBEE_PREFIX,
         )
         self._publish_startup_snapshot()
 
@@ -168,7 +180,16 @@ class MqttState:
         )
 
     def _on_message(self, client, userdata, msg: "mqtt.MQTTMessage") -> None:
+        zigbee_prefix = f"{self.ZIGBEE_PREFIX}/"
         prefix = f"{self.CONTROL_PREFIX}/"
+
+        if msg.topic.startswith(zigbee_prefix):
+            # Якщо це системне повідомлення Z2M (bridge) - ігноруємо його
+            if msg.topic.startswith(f"{self.ZIGBEE_PREFIX}/bridge/") or msg.topic.startswith(f"{self.ZIGBEE_PREFIX}/Zone"):
+                return
+            self._scan_payload_for_lux(msg.payload)
+            return # Обов'язково виходимо, бо це топік Z2M, а нижче код для LogicService
+
         if not msg.topic.startswith(prefix):
             return
         rest = msg.topic[len(prefix):]  # "Zone_1_Channel_2/set", ".../get" або "bridge/sensor"
@@ -195,21 +216,21 @@ class MqttState:
             log.warning("bridge/sensor: некоректний JSON: %r", payload_bytes)
             return
 
-        umol = data.get("umol") if isinstance(data, dict) else None
-        if umol is None:
-            log.warning("bridge/sensor: немає ключа 'umol' у %r", data)
+        lux = data.get("lux") if isinstance(data, dict) else None
+        if lux is None:
+            log.warning("bridge/sensor: немає ключа 'lux' у %r", data)
             return
 
         try:
-            self.sensor_umol = float(umol)
+            self.sensor_lux = float(lux)
         except (TypeError, ValueError):
-            log.warning("bridge/sensor: некоректне значення umol: %r", umol)
+            log.warning("bridge/sensor: некоректне значення lux: %r", lux)
             return
 
-        log.debug("Показник датчика оновлено: %.1f μmol", self.sensor_umol)
+        log.debug("Показник датчика оновлено: %.1f lux", self.sensor_lux)
 
-    def get_sensor_umol(self) -> float:
-        return self.sensor_umol
+    def get_sensor_lux(self) -> float:
+        return self.sensor_lux
 
     # ------------------------------------------------------------------ #
     def _handle_set(self, group: str, payload_bytes: bytes) -> None:
@@ -333,3 +354,44 @@ class MqttState:
 
         self._client.publish(topic, payload)
         log.info("-> %s : %s", topic, payload)
+
+    def _scan_payload_for_lux(self, payload_bytes: bytes) -> None:
+        if not payload_bytes:
+            return
+            
+        try:
+            data = json.loads(payload_bytes.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # Мовчки ігноруємо, якщо це не JSON
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        # Шукаємо ключ illuminance 
+        lux = data.get("illuminance")
+
+        # Якщо нічого з цього не знайшли — це просто інший девайс (наприклад, вимикач).
+        # Мовчки виходимо.
+        if lux is None:
+            return
+
+        # Якщо ж знайшли — намагаємось відправити
+        try:
+            # Переконуємося, що це число (щоб не відправити якийсь текст типу "N/A")
+            lux_value = float(lux)
+            
+            # Формуємо правильний топік: "LogicService/bridge/sensor"
+            topic = f"{self.CONTROL_PREFIX}/bridge/sensor"
+            
+            # Пакуємо в потрібний формат payload
+            payload = json.dumps({"lux": lux_value})
+            
+            self._client.publish(topic, payload)
+            
+            # Залишаємо легкий дебаг-лог, щоб ти бачив, що сканер спрацював
+            log.debug("Сканер знайшов люкси і переслав у %s: %s", topic, payload)
+            
+        except (TypeError, ValueError):
+            # Якщо значення прийшло бите, просто ігноруємо
+            pass

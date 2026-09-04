@@ -146,9 +146,9 @@ class SchedulerService:
                 log.debug("%s: пропуск (mode=auto, але scenarios порожні/некоректні)", label)
                 return "skipped"
 
-            sensor_umol = self.state.get_sensor_umol()
+            sensor_lux = self.state.get_sensor_lux()
 
-            target = resolve_auto_brightness(points, now_minutes, sensor_umol, max_umol)
+            target = resolve_auto_brightness(points, now_minutes, sensor_lux, max_umol)
             if target is None:
                 log.debug("%s: авто-резолюція не дала результату (не мало б статись)", label)
                 return "skipped"
@@ -162,7 +162,7 @@ class SchedulerService:
 
             log.info(
                 "%s: auto -> %s%% (датчик=%.1f μmol, max_umol=%.1f)",
-                label, target, sensor_umol, max_umol
+                label, target, sensor_lux, max_umol
             )
             self.state.apply_timer_brightness(zone, channel, target)
             self._last_sent[key] = target
