@@ -251,8 +251,8 @@ const definition = {
     exposes: [
         // Публікується без суфікса ендпоінта.
         e.numeric('boot_status', ea.ALL)
-            .withDescription('0 = потрібна синхронізація, 1 = синхронізовано')
-            .withValueMax(1)
+            .withDescription('Система heart beat')
+            .withValueMax(3)
             .withValueMin(0),
 
         e.enum('mode', ea.ALL, ['manual', 'timer', 'auto'])
