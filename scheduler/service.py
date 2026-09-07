@@ -137,8 +137,10 @@ class SchedulerService:
         mode = cfg["mode"]
 
         if mode == "manual":
-            log.debug("%s: пропуск (mode=manual, керування відбувається одразу через /set)", label)
-            return "skipped"
+            target = cfg.get("brightness")
+            log.debug("Режим мануал, таргет яскравість: %d", target)
+            self.state.apply_timer_brightness(zone, channel, target)
+            return "sent"
 
         if mode == "auto":
             points = parse_scenarios(cfg["scenarios"])

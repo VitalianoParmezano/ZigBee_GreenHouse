@@ -1,5 +1,5 @@
 """
-SQLite-сховище для mode/scenarios/offline_brightness/brightness
+SQLite-сховище для mode/scenarios/brightness
 ПО ЗОНАХ/КАНАЛАХ.
 
 ESP тепер має ЛИШЕ стандартний brightness + on/off кластер - жодного
@@ -31,14 +31,13 @@ CREATE TABLE IF NOT EXISTS channel_config (
     channel INTEGER NOT NULL,
     mode TEXT NOT NULL DEFAULT 'manual',
     scenarios TEXT NOT NULL DEFAULT '[]',
-    offline_brightness INTEGER NOT NULL DEFAULT 0,
     brightness INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (zone, channel)
 );
 """
 
 
-VALID_FIELDS = {"mode", "scenarios", "offline_brightness", "brightness"}
+VALID_FIELDS = {"mode", "scenarios", "brightness"}
 
 _SCHEMA_LAMPS = """
 CREATE TABLE IF NOT EXISTS lamp_config (
@@ -70,16 +69,15 @@ class ChannelStore:
     def get(self, zone: int, channel: int) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT mode, scenarios, offline_brightness, brightness "
+                "SELECT mode, scenarios, brightness "
                 "FROM channel_config WHERE zone=? AND channel=?",
                 (zone, channel),
             ).fetchone()
         if row is None:
             return {
-                "mode": "manual", "scenarios": [], 
-                "offline_brightness": 0, "brightness": 0,
+                "mode": "manual", "scenarios": [], "brightness": 0,
             }
-        mode, scenarios_raw, offline_brightness, brightness = row
+        mode, scenarios_raw, brightness = row
         try:
             scenarios = json.loads(scenarios_raw)
         except json.JSONDecodeError:
@@ -87,7 +85,6 @@ class ChannelStore:
         return {
             "mode": mode,
             "scenarios": scenarios,
-            "offline_brightness": offline_brightness,
             "brightness": brightness,
         }
 
@@ -103,19 +100,17 @@ class ChannelStore:
             self._conn.execute(
                 """
                 INSERT INTO channel_config
-                    (zone, channel, mode, scenarios, offline_brightness, brightness)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (zone, channel, mode, scenarios, brightness)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(zone, channel) DO UPDATE SET
                     mode = excluded.mode,
                     scenarios = excluded.scenarios,
-                    offline_brightness = excluded.offline_brightness,
                     brightness = excluded.brightness
                 """,
                 (
                     zone, channel,
                     current["mode"],
                     json.dumps(current["scenarios"]),
-                    int(current["offline_brightness"]),
                     int(current["brightness"]),
                 ),
             )
