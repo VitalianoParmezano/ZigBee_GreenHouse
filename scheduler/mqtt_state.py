@@ -174,6 +174,18 @@ class MqttState:
                 self._broadcast(group, self.store.get(zone, channel))
                 count += 1
 
+        # {"max_umol_channel1": 10.0, "max_umol_channel2": 150.0, ...} - той самий
+        # формат ключів, що приймає _handle_max_umol_update, щоб фронт міг
+        # використовувати одну й ту саму схему і для читання, і для запису.
+        max_umols = self.store.get_all_lamp_max_umols()
+        max_umol_payload = {f"max_umol_channel{ch}": val for ch, val in max_umols.items()}
+        self._client.publish(
+            f"{self.CONTROL_PREFIX}/bridge/max_umol",
+            json.dumps(max_umol_payload),
+            retain=True,
+        )
+
+
         log.info(
             "Опубліковано стартовий знімок: %s/bridge/info + стан %s каналів (%s zones x %s channels)",
             self.CONTROL_PREFIX, count, settings.zones, settings.channels_per_zone,
@@ -200,7 +212,6 @@ class MqttState:
             return
 
         if rest == "bridge/max_umol":
-            print("Lol kek cheburek")
             self._handle_max_umol_update(msg.payload)
             return
 
