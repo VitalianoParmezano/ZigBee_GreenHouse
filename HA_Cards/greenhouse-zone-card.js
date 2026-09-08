@@ -25,6 +25,7 @@ const SCENARIO_SLOTS = 12;
 const CONTROL_PREFIX = 'LogicService';
 const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV1';
 const DEBUG_UMOL_SENSOR = true; // В авторежимі чи показувати ручний умоль сенсор (повзунок який імітує датчик) true = показати
+const ZONE_LABEL = 'Хатка'; // Константа яка використовується для показу кінцевому користувачу
 
 function groupName(zone, channel) {
     return `Zone_${zone}_Channel_${channel}`;
@@ -390,7 +391,7 @@ class GreenhouseZoneCard extends HTMLElement {
             cell.className = 'zone-cell';
             cell.innerHTML = `
                 <ha-icon class="zone-icon" id="zone-${i}-icon" icon="mdi:sprout"></ha-icon>
-                <div class="zone-title">Зона ${i}</div>
+                <div class="zone-title">${ZONE_LABEL} ${i}</div>
                 <div class="zone-status" id="zone-${i}-val">Офлайн</div>
             `;
 
@@ -501,7 +502,7 @@ class GreenhouseZoneCard extends HTMLElement {
             <div class="gh-toast-icon"><ha-icon icon="${isOffline ? 'mdi:wifi-off' : 'mdi:wifi-check'}"></ha-icon></div>
             <div class="gh-toast-text">
                 <div class="gh-toast-title">${isOffline ? 'Пристрій офлайн' : "Зв'язок відновлено"}</div>
-                <div class="gh-toast-sub">Зона ${zone} · ${device}</div>
+                <div class="gh-toast-sub">${ZONE_LABEL} ${zone} · ${device}</div>
             </div>
             <button class="gh-toast-close">✕</button>
         `;
@@ -639,7 +640,7 @@ class GreenhouseZoneCard extends HTMLElement {
                 <div class="gh-offline-item">
                     <ha-icon icon="mdi:wifi-off"></ha-icon>
                     <div class="gh-offline-item-text">
-                        <div class="gh-offline-item-zone">Зона ${item.zone}</div>
+                        <div class="gh-offline-item-zone">${ZONE_LABEL} ${item.zone}</div>
                         <div class="gh-offline-item-device">${item.device}</div>
                     </div>
                 </div>
@@ -894,7 +895,7 @@ class GreenhouseZoneCard extends HTMLElement {
             </style>
             <div class="gh-modal-box">
                 <div class="gh-modal-header">
-                    <div class="gh-modal-title">Керування — Зона ${zone}</div>
+                    <div class="gh-modal-title">Керування — ${ZONE_LABEL} ${zone}</div>
                     <button class="gh-modal-close" id="gh-modal-close">✕</button>
                 </div>
 
@@ -1243,7 +1244,7 @@ class GreenhouseZoneCard extends HTMLElement {
             <button class="gh-save-btn" id="gh-save-scenarios">Зберегти розклад</button>
             <div class="gh-hint">
                 Порожні рядки (без часу) ігноруються при збереженні.
-                Копіювання/вставка працює між будь-якими зонами й каналами.
+                Копіювання/вставка працює між будь-якими каналами.
             </div>
         `;
     }
