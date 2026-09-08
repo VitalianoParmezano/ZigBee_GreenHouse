@@ -138,28 +138,27 @@ class SchedulerService:
 
         if mode == "manual":
             target = cfg.get("brightness")
-            log.debug("Режим мануал, таргет яскравість: %d", target)
+            if target is None:
+                log.debug("%s: manual без збереженого значення -> 0%%", label)
+                target = 0
+            log.debug("%s: manual -> %s%%", label, target)
             self.state.apply_timer_brightness(zone, channel, target)
             return "sent"
 
         if mode == "auto":
             points = parse_scenarios(cfg["scenarios"])
-            if not points:
-                log.debug("%s: пропуск (mode=auto, але scenarios порожні/некоректні)", label)
-                return "skipped"
-
             sensor_lux = self.state.get_sensor_lux()
 
-            target = resolve_auto_brightness(points, now_minutes, sensor_lux, max_umol)
+            target = resolve_auto_brightness(points, now_minutes, sensor_lux, max_umol) if points else None
             if target is None:
-                log.debug("%s: авто-резолюція не дала результату (не мало б статись)", label)
-                return "skipped"
+                log.debug("%s: auto без розкладу/результату -> 0%%", label)
+                target = 0
 
 # Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-# У випадку з приєднанням нових пристроїв - вони не отримають команду 
+# У випадку з приєднанням нових пристроїв - вони не отримають команду
             key = (zone, channel)
             # if self._last_sent.get(key) == target:
-            #     log.debug("%s: без змін (%s%%, датчик=%.1f μmol)", label, target, sensor_umol)
+            #     log.debug("%s: без змін (%s%%, датчик=%.1f μmol)", label, target, sensor_lux)
             #     return "unchanged"
 
             log.info(
@@ -171,27 +170,24 @@ class SchedulerService:
             return "sent"
 
         if mode != "timer":
-            log.debug("%s: пропуск (невідомий mode=%r)", label, mode)
-            return "skipped"
+            log.debug("%s: невідомий mode=%r -> 0%%", label, mode)
+            self.state.apply_timer_brightness(zone, channel, 0)
+            return "sent"
 
         points = parse_scenarios(cfg["scenarios"])
-        if not points:
-            log.debug("%s: пропуск (mode=timer, але scenarios порожні/некоректні)", label)
-            return "skipped"
-
-        target = resolve_target_brightness(points, now_minutes)
+        target = resolve_target_brightness(points, now_minutes) if points else None
         if target is None:
-            log.debug("%s: резолюція не дала результату (не мало б статись)", label)
-            return "skipped"
+            log.debug("%s: timer без розкладу/результату -> 0%%", label)
+            target = 0
 
 # Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-# У випадку з приєднанням нових пристроїв - вони не отримають команду 
+# У випадку з приєднанням нових пристроїв - вони не отримають команду
         key = (zone, channel)
         # if self._last_sent.get(key) == target:
         #     log.debug("%s: без змін (%s%%)", label, target)
         #     return "unchanged"
 
-        nxt = next_change(points, now_minutes)
+        nxt = next_change(points, now_minutes) if points else None
         log.info(
             "%s: timer -> %s%% (наступна зміна о %s)",
             label, target, nxt.time_str if nxt else "-",
