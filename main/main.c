@@ -13,13 +13,20 @@
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
 #endif
 
+
 // Інтервал фізичного читання з датчика (сировий поллінг)
 #define LIGHT_SENSOR_UPDATE_INTERVAL_MS   (2 * 1000)  // 2 секунди — як часто реально опитуємо датчик
 
 // Параметри ZCL-звітування (attribute reporting)
-#define LIGHT_SENSOR_REPORT_MIN_INTERVAL  10    // сек — мінімальний час між репортами (анти-спам)
-#define LIGHT_SENSOR_REPORT_MAX_INTERVAL  300   // сек — "по таймауту": heartbeat навіть без змін
-#define LIGHT_SENSOR_REPORT_DELTA         50    // одиниці MeasuredValue — поріг "значної зміни"
+#define LIGHT_SENSOR_REPORT_MIN_INTERVAL  1    // сек — мінімальний час між репортами (анти-спам)
+#define LIGHT_SENSOR_REPORT_MAX_INTERVAL  5   // сек — "по таймауту": heartbeat навіть без змін
+#define LIGHT_SENSOR_REPORT_DELTA         1    // одиниці MeasuredValue — поріг "значної зміни"
+
+#define COORDINATOR_ADDR      0x0000  // короткий адрес координатора завжди 0x0000
+#define COORDINATOR_ENDPOINT  1       // типовий ендпоінт координатора (Z2M/HA) для прийому репортів
+
+static void bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx);
+
 
 static const char *TAG = "MAIN";
 /********************* Define functions **************************/
@@ -34,6 +41,46 @@ static uint16_t lux_to_zigbee_value(uint16_t lux) {
     
     // if (zcl_value > 65534.0f) return 0xFFFE;
     return (uint16_t)zcl_value;
+}
+
+static void send_sensor_report(uint16_t status_value) {
+    esp_zb_lock_acquire(portMAX_DELAY);
+
+    // Записуємо локально
+    esp_err_t err = esp_zb_zcl_set_attribute_val(
+        HA_ESP_LIGHT_ENDPOINT, ESP_ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT,
+        ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, 
+        ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID, &status_value, false
+    );
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Помилка запису в локальний атрибут: %s", esp_err_to_name(err));
+        esp_zb_lock_release();
+        return;
+    }
+
+    // Формуємо радіопакет
+    esp_zb_zcl_report_attr_cmd_t report_cmd = {
+        .zcl_basic_cmd = {
+            .dst_addr_u.addr_short = 0x0000,
+            .dst_endpoint = 1,
+            .src_endpoint = HA_ESP_LIGHT_ENDPOINT,
+        },
+        .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
+        .clusterID = ESP_ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT,
+        .attributeID = ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID,
+        .direction = ESP_ZB_ZCL_CMD_DIRECTION_TO_CLI,
+        .dis_default_resp = 0,
+        .manuf_specific = 0,
+        .manuf_code = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC
+    };
+    
+    err = esp_zb_zcl_report_attr_cmd_req(&report_cmd);
+    esp_zb_lock_release();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Помилка відправки радіопакета: %s", esp_err_to_name(err));
+    }
 }
 
 static void bdb_start_top_level_commissioning_cb(uint8_t mode_mask)
@@ -95,14 +142,6 @@ static esp_err_t zb_attribute_handler(const esp_zb_zcl_set_attr_value_message_t 
 static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id, const void *message)
 {
     esp_err_t ret = ESP_OK;
-    // switch (callback_id) {
-    // case ESP_ZB_CORE_SET_ATTR_VALUE_CB_ID:
-    //     ret = zb_attribute_handler((esp_zb_zcl_set_attr_value_message_t *)message);
-    //     break;
-    // default:
-    //     ESP_LOGW(TAG, "Receive Zigbee action(0x%x) callback", callback_id);
-    //     break;
-    // }
     return ret;
 }
 
@@ -133,13 +172,25 @@ static void esp_zb_task(void *pvParameters)
         .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,                        // ми — сервер кластера (джерело даних)
         .attr_id      = ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID, // атрибут, який репортимо
         .manuf_code   = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,             // не виробничо-специфічний атрибут
+        .dst.profile_id = ESP_ZB_AF_HA_PROFILE_ID,
         .u.send_info.min_interval     = LIGHT_SENSOR_REPORT_MIN_INTERVAL,      // (б) не частіше N сек навіть при бурхливих змінах
         .u.send_info.max_interval     = LIGHT_SENSOR_REPORT_MAX_INTERVAL,      // (а) heartbeat: репорт кожні N сек навіть без змін
         .u.send_info.def_min_interval = LIGHT_SENSOR_REPORT_MIN_INTERVAL,      // дефолтне значення min (на випадок reset to default)
         .u.send_info.def_max_interval = LIGHT_SENSOR_REPORT_MAX_INTERVAL,      // дефолтне значення max
         .u.send_info.delta.u16        = LIGHT_SENSOR_REPORT_DELTA,             // (б) поріг значної зміни, що тригерить негайний репорт
     };
-    esp_zb_zcl_update_reporting_info(&report_cfg);
+    esp_err_t err = esp_zb_zcl_update_reporting_info(&report_cfg);
+    ESP_LOGW(TAG, "Reporting status: %d, %s", err, esp_err_to_name(err));
+    
+    esp_zb_zcl_attr_location_info_t attr_report_info = {
+        .endpoint_id  = HA_ESP_LIGHT_ENDPOINT,                                     /*!< The endpoint identifier on which the cluster id is resident. */
+        .cluster_id   = ESP_ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT,             /*!< The cluster identifier on which the attribute is resident */
+        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,                            /*!< The role of cluster */
+        .manuf_code   = ESP_ZB_ZCL_ATTR_NON_MANUFACTURER_SPECIFIC,                 /*!< The manufacturer code of attribute */
+        .attr_id      = ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID, /*!< The attribute identifier */
+    };
+
+    esp_zb_zcl_start_attr_reporting(attr_report_info);
     // (в) "По запиту" окремого коду не потребує — Read Attributes стек обробляє сам,
     //     віддаючи поточне значення з таблиці атрибутів (те, що ми пишемо нижче через set_attribute_val).
 
@@ -157,14 +208,16 @@ static void light_sensor_update_task(void *pvParameters)
 
         ESP_LOGI(TAG, "Lux value: %d, Zigbee MeasuredValue: %d", lux, zigbee_value);
 
-        esp_zb_lock_acquire(portMAX_DELAY);
-        esp_zb_zcl_set_attribute_val(HA_ESP_LIGHT_ENDPOINT,                                    // ендпоінт
-                                      ESP_ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT,            // кластер
-                                      ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,                           // роль (сервер)
-                                      ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID,// id атрибута
-                                      &zigbee_value,                                            // нове значення
-                                      false);                                                   // check_access — не перевіряти права запису
-        esp_zb_lock_release();
+        send_sensor_report(zigbee_value);
+
+        // esp_zb_lock_acquire(portMAX_DELAY);
+        // esp_zb_zcl_set_attribute_val(HA_ESP_LIGHT_ENDPOINT,                                    // ендпоінт
+        //                               ESP_ZB_ZCL_CLUSTER_ID_ILLUMINANCE_MEASUREMENT,            // кластер
+        //                               ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,                           // роль (сервер)
+        //                               ESP_ZB_ZCL_ATTR_ILLUMINANCE_MEASUREMENT_MEASURED_VALUE_ID,// id атрибута
+        //                               &zigbee_value,                                            // нове значення
+        //                               false);                                                   // check_access — не перевіряти права запису
+        // esp_zb_lock_release();
 
         // Тут стек сам вирішить, слати репорт зараз (delta перевищено) чи чекати max_interval
         vTaskDelay(pdMS_TO_TICKS(LIGHT_SENSOR_UPDATE_INTERVAL_MS));
