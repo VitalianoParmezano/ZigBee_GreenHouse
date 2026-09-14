@@ -9,7 +9,12 @@
 
 const TOPIC = 'LogicService/bridge/max_umol';
 const TOPIC_SENSOR = 'LogicService/bridge/sensor';
-const CHANNELS = [1, 2, 3];
+// CHANNELS_PER_ZONE - та сама константа за змістом, що й у greenhouse-zone-card.js
+// (окремі файли, тож синхронізується вручну). Якщо канал усього один -
+// зайві поля для 2-го й 3-го каналів просто не рендеряться, замість того
+// щоб показувати непотрібний вибір там, де вибирати нічого.
+const CHANNELS_PER_ZONE = 3;
+const CHANNELS = Array.from({ length: CHANNELS_PER_ZONE }, (_, i) => i + 1);
 const LUX_TO_UMOL_DIVIDER = 69; // Коефіцієнт для перетворення lux в μmol/m²/s
 const NUMBERS_AFTER_COMMA_SENSOR_VALUE = 2;
 
@@ -24,7 +29,7 @@ class GreenhouseMaxUmolCard extends HTMLElement {
         super();
         this._mqttSubscribed = false;
         this._unsubMqtt = null;
-        this._values = { 1: 0, 2: 0, 3: 0 };
+        this._values = Object.fromEntries(CHANNELS.map((ch) => [ch, 0]));
         this._sensorValue = '--'; // Початкове значення сенсора
     }
 
@@ -112,11 +117,10 @@ class GreenhouseMaxUmolCard extends HTMLElement {
 
     async _publish() {
         if (!this._hass) return;
-        const payload = {
-            max_umol_channel1: this._values[1],
-            max_umol_channel2: this._values[2],
-            max_umol_channel3: this._values[3],
-        };
+        const payload = {};
+        CHANNELS.forEach((ch) => {
+            payload[`max_umol_channel${ch}`] = this._values[ch];
+        });
         try {
             await this._hass.callService('mqtt', 'publish', {
                 topic: TOPIC,

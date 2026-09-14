@@ -966,6 +966,16 @@ class GreenhouseZoneCard extends HTMLElement {
         const { activeChannel } = this._modalState;
         const row = this._modalRoot.querySelector('#gh-tabs-row');
 
+        // Якщо канал усього один - вибирати нічого, перемикач лише займав би
+        // місце. activeChannel і так завжди 1 (див. _openZoneModal), тож
+        // решта коду продовжує працювати без жодних додаткових умов.
+        if (CHANNELS_PER_ZONE <= 1) {
+            row.style.display = 'none';
+            row.innerHTML = '';
+            return;
+        }
+        row.style.display = '';
+
         row.innerHTML = Array.from({ length: CHANNELS_PER_ZONE }, (_, idx) => idx + 1)
             .map((ch) => `<div class="gh-pill ${ch === activeChannel ? 'active' : ''}" data-channel="${ch}">Канал ${ch}</div>`)
             .join('');
