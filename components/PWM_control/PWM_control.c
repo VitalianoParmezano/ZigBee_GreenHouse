@@ -66,7 +66,7 @@ void pwm_out_set_percent(uint8_t channel, uint8_t level)
         level = 100;
     }
     ESP_LOGI(TAG, "PWM надсилає відсоток: %d", level);
-    uint32_t max_duty = (1 << PWM_OUT_DUTY_RES) - 1; // 1023 для 10 біт
+    uint32_t max_duty = (1 << PWM_OUT_DUTY_RES); // 1023 для 10 біт
     uint32_t duty = (max_duty * level) / 100;
 
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_OUT, duty));
