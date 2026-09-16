@@ -17,11 +17,8 @@
 #include "PWM_control.h"
 
 #include "driver/ledc.h"
-#define PWM_GPIO_NUM       24
-#define PWM_FREQ_HZ        5000 // Частота 5 кГц
-#define PWM_RESOLUTION     LEDC_TIMER_13_BIT
 
-static const char *TAG = "Light_Router"; 
+static const char *TAG = "Main"; 
 
 // ==========================================
 // ОБРОБНИК СИГНАЛІВ ZIGBEE

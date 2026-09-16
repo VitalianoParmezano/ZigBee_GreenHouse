@@ -8,12 +8,6 @@
 #include "stdlib.h"
 
 
-// Явні дефініції пінів на випадок, якщо їх немає в Kconfig
-#define MB_PORT_NUM            UART_NUM_1
-#define MB_UART_TXD            GPIO_NUM_0
-#define MB_UART_RXD            GPIO_NUM_1
-#define MB_UART_RTS            GPIO_NUM_2 
-#define MB_DEV_SPEED           115200 
 
 typedef struct {
     // 0x0017 - Температура (Увага: може не підтримуватися на прошивці A03, повертає таймаут)

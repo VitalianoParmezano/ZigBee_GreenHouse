@@ -1,15 +1,10 @@
 #include "endpoint_config.h"
 #include "dip_switch.h"
 
-#define ESP_MANUFACTURER_NAME "\x03""ESV" 
-#define ESP_MODEL_ID          "\x18""Greenhouse_Controller_v1" // \x18 це 24 в HEX
 
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer);
 
 static uint8_t boot_status = 0;       // Атрибут 0x0000: Статус завантаження: по-дефолту 0, після отримання даних від сервера змінюється на 1, 2 -> сигнал heart_beat
-
-#define SHIFT 10 // Зсув для номерів ендпоінтів каналів (щоб не перетинатися з базовим ендпоінтом)
-
 
 static const char *TAG = "ENDPOINT_CONFIG"; 
 // Зсув номерів ендпоінтів каналів
@@ -139,31 +134,6 @@ void create_greenhouse_light_endpoint_list(esp_zb_ep_list_t *ep_list)
         esp_zb_ep_list_add_ep(ep_list, cluster_list, level_endpoint_config);
     }
 }
-/*
-    ESP_LOGI(TAG, "\n=== Детальна інформація про Ендпоінти пристрою ===");
-    
-    esp_zb_ep_list_t *temp = ep_list;
-    int counter = 1;
-
-    // Класичний і чистий цикл перебору зв'язного списку
-    while (temp != NULL) {
-        esp_zb_endpoint_t *ep = &temp->endpoint; 
-        
-        printf("----------------------------------------\n");
-        printf("[%d] Endpoint ID:     %d\n", counter++, ep->ep_id);
-        
-        // Profile ID зазвичай виводять у HEX (наприклад, 0x0104 - це Home Automation)
-        printf("    Profile ID:      0x%04X\n", ep->profile_id);
-        
-
-        // Переходимо до наступного вузла у списку
-        temp = temp->next;
-    }
-    printf("----------------------------------------\n");
-    printf("Усього ендпоінтів: %d\n", counter - 1);    
-}
-*/
-
 
 // перетворює uint8_t у Zigbee Pascal-рядок
 static void format_dip_to_pascal_string(uint8_t dip_val, uint8_t *out_buffer) 

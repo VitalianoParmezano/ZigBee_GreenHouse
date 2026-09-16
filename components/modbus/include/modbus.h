@@ -1,6 +1,17 @@
 #ifndef MODBUS_H
 #define MODBUS_H
 
+
+/* Явні дефініції пінів для modbus
+    Передаються дані по UART на мікросхему MAX485,
+    тут усі піни які треба для цього
+*/
+#define MB_PORT_NUM            UART_NUM_1
+#define MB_UART_TXD            GPIO_NUM_0
+#define MB_UART_RXD            GPIO_NUM_1
+#define MB_UART_RTS            GPIO_NUM_2 
+#define MB_DEV_SPEED           115200 
+
 #include <stdint.h>
 
 /**
