@@ -7,25 +7,24 @@
 
 static const char *TAG = "LIGHT_DRIVER";
 
-#define LEDC_TIMER              LEDC_TIMER_0
-#define LEDC_MODE               LEDC_LOW_SPEED_MODE
-#define LEDC_DUTY_RES           LEDC_TIMER_8_BIT 
-#define LEDC_FREQUENCY          (5000)   
+// #define LEDC_TIMER              LEDC_TIMER_3
+// #define LEDC_MODE               LEDC_LOW_SPEED_MODE
+// #define LEDC_DUTY_RES           LEDC_TIMER_8_BIT 
+// #define LEDC_FREQUENCY          (5000)   
 
 static TaskHandle_t s_blink_task_handle = NULL; // Для таски з блиманням світла/ щоб не запустити повторно
 static led_strip_handle_t s_led_strip;
 
 bool light_driver_init_done = false;
 
-static uint8_t s_red = 0, s_green = 0, s_blue = 0;
+static uint8_t s_green = 0, s_reg = 0, s_blue = 0;
 
-void light_driver_init(void){
+void led_strip_driver_init(void){
 
     if (light_driver_init_done) {
         ESP_LOGW(TAG, "Light driver is already initialized");
         return;
     }
-
         led_strip_config_t led_strip_conf = {
         .max_leds = 1,
         .strip_gpio_num = 8,
@@ -36,7 +35,7 @@ void light_driver_init(void){
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&led_strip_conf, &rmt_conf, &s_led_strip));
     light_driver_init_done = true;
     // Стандартний стан після ініціалізації
-    s_red = 0; s_green = 0; s_blue = 0;
+    s_green = 0; s_reg = 0; s_blue = 0;
 
 }
 
@@ -48,27 +47,27 @@ void led_strip_set_level(int channel, uint8_t brightness)
     switch (channel)
     {
     case 1:
-        s_red = brightness;
+        s_green = brightness;
         break;
     case 2:
-        s_green = brightness;
+        s_reg = brightness;
         break;
     case 3:
         s_blue = brightness;
         break;
     default:
-        s_red = s_green = s_blue = brightness;
+        s_green = s_reg = s_blue = brightness;
         break;
     }
 
-    ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_red, s_green, s_blue));
+    ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_green, s_reg, s_blue));
     ESP_ERROR_CHECK(led_strip_refresh(s_led_strip));
 }
 
 void light_driver_turn_off(void)
 {
-    s_red = s_green = s_blue = 0;
-    ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_red, s_green, s_blue));
+    s_green = s_reg = s_blue = 0;
+    ESP_ERROR_CHECK(led_strip_set_pixel(s_led_strip, 0, s_green, s_reg, s_blue));
     ESP_ERROR_CHECK(led_strip_refresh(s_led_strip));
 }
 

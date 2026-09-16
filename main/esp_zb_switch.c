@@ -14,6 +14,8 @@
 
 #include "heart_beat.h"              // Обробка сигналу Heart Beat
 
+#include "PWM_control.h"
+
 #include "driver/ledc.h"
 #define PWM_GPIO_NUM       24
 #define PWM_FREQ_HZ        5000 // Частота 5 кГц
@@ -164,10 +166,12 @@ void app_main(void) {
     }
 
     dip_switch_init(); // Ініціалізуємо GPIO для Діп свіча
-    light_driver_init(); // Ініціалізуємо драйвер світла
     init_reset_configuration(); // Ініціалізуємо конфігурацію кнопки скидання
-    modbus_init();
-    heart_beat_init(); // Ініціалізуємо систему серцебиття
+    
+    // Ініціалізує конктерний дравер, потребує уваги при переконфігурації
+    driver_module_init_current_driver();
+
+    heart_beat_init(); // Ініціалізація системи серцебиття
 
 
 

@@ -4,7 +4,7 @@
 #include "esp_log.h"
 
 static const char *TAG = "DIP_SWITCH";
-static const int DIP_SWITCH_GPIO_BASE[] = {10, 11, 12}; // Піни діп свіча | від молодшого біта до старшого
+static const int DIP_SWITCH_GPIO_BASE[] = {11, 25, 12}; // Піни діп свіча | від молодшого біта до старшого
 static uint8_t dip_switch_value = 255; 
 static bool dip_switch_initialized = false;
 

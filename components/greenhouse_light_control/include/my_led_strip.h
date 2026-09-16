@@ -10,7 +10,7 @@ extern "C" {
 /**
  * @brief Ініціалізація ШІМ-контролера для всіх каналів світла
  */
-void light_driver_init(void);
+void led_strip_driver_init(void);
 
 /**
  * @brief Встановлення яскравості для конкретного ендпоінта
