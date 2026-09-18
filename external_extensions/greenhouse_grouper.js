@@ -40,6 +40,27 @@ const ZONES_OFFSET = 1;
 const LOGIC_SERVICE_PREFIX = 'LogicService'; // окремий канал для картки, не плутати з zigbee2mqtt/bridge/*
 const HEARTBEAT_TIMEOUT_MS = 100_000; // пінг очікується раз на 50-70с, тому 100с - запас на один пропущений цикл
 
+// Має ЗБІГАТИСЯ з `zigbeeModel` у greenhouse_controller.js - тримати вручну
+// синхронізованим (перенести в спільний модуль, якщо файлів стане більше).
+// На мережі, крім плат теплиці, є ще Zigbee-роутери (голі репітери без
+// прикладної логіки) і окремий сенсор світла - жодний з них не повинен
+// потрапляти в групування/heartbeat нижче.
+const MY_DEVICE_MODEL = 'Greenhouse_Controller_v1';
+
+/**
+ * device.definition заповнюється Z2M ПІСЛЯ того, як пристрій підв'язано до
+ * конкретного конвертера (у т.ч. зовнішнього, як greenhouse_controller.js) -
+ * це головний, надійний спосіб перевірки. device.modelID - сире значення з
+ * Basic-кластера, доступне навіть якщо жоден конвертер не підхопився
+ * (напр. геть невідомий пристрій) - лишається як резервна перевірка.
+ * Невідома модель (undefined з обох боків) коректно НЕ проходить перевірку -
+ * пристрої без визначеного типу теж ігноруються, а не обробляються "на всяк випадок".
+ */
+function isGreenhouseController(device) {
+    const model = device?.definition?.model ?? device?.modelID;
+    return model === MY_DEVICE_MODEL;
+}
+
 // Ці функції пакування дублюють ті, що в external converter - варто тримати
 // їх синхронізованими або перенести в спільний модуль при розростанні логіки.
 function timeToMinutes(timeStr) {
@@ -109,6 +130,15 @@ class AutoGrouper {
     async onDeviceInterview(data) {
         if (data.status !== 'successful') return;
 
+        if (!isGreenhouseController(data.device)) {
+            console.log(
+                `🌿 [AutoGrouper] Пристрій ${data.device.ieeeAddr} ` +
+                `(модель: ${data.device?.definition?.model ?? data.device?.modelID ?? 'невідома'}) - ` +
+                `не контроллер теплиці.`,
+            );
+            return;
+        }
+
         console.log(`🌿 [AutoGrouper] Interview successful for: ${data.device.ieeeAddr}. Запускаю фоновий процес...`);
 
         this.setupDevicesInBackground(data.device).catch((err) => {
@@ -120,6 +150,11 @@ class AutoGrouper {
     // data містить: { entity (об'єкт пристрою/групи), from, to, update (змінені поля) }
     async onStateChange(data) {
         if (!data.entity || data.entity.isGroup()) return;
+        // Роутери/сенсор світла теж генерують state-change (звичайний Zigbee-трафік) -
+        // без цієї перевірки boot_status нижче все одно ніколи не збіжиться на них,
+        // але явний вихід тут дешевший і не залежить від того, які ще перевірки
+        // з'являться в цьому методі згодом.
+        if (!isGreenhouseController(data.entity)) return;
 
         // Пінг (серцебиття) ловиться тут - мікроконтролером надсилається 2, очікується підтвердження зв'язку
         if (data.update && data.update.boot_status === 2) {
@@ -265,7 +300,8 @@ class AutoGrouper {
         let armedCount = 0;
         for (const device of devices) {
             if (!device || !device.zh || device.zh.type === 'Coordinator') continue;
-            if (!device.zh.getEndpoint(2)) continue; // системного ендпоінта немає - пристрій не наш
+            if (!isGreenhouseController(device)) continue; // роутер/сенсор/сторонній пристрій - не моя плата
+            if (!device.zh.getEndpoint(2)) continue; // системного ендпоінта немає - про всяк випадок, навіть якщо модель збіглась
 
             const timer = setTimeout(() => {
                 this._markDeviceOffline(device).catch((err) => {
