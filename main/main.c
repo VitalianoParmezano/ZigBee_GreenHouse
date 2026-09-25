@@ -17,6 +17,13 @@
 // Інтервал фізичного читання з датчика (сировий поллінг)
 #define LIGHT_SENSOR_UPDATE_INTERVAL_MS   (2 * 1000)  // 2 секунди — як часто реально опитуємо датчик
 
+// Коефіцієнт який вказує на скільки треба множити отримане значення з датчика,
+// Наприклад якщо перед датчиком поставили плівку яка поглинає 50% світла
+// це значення має бути 2, але дуже раджу використовувати експериментальний підхід
+// для отримання цього значення
+#define KOEFISIENT 4
+
+
 // Параметри ZCL-звітування (attribute reporting)
 #define LIGHT_SENSOR_REPORT_MIN_INTERVAL  1    // сек — мінімальний час між репортами (анти-спам)
 #define LIGHT_SENSOR_REPORT_MAX_INTERVAL  5   // сек — "по таймауту": heartbeat навіть без змін
@@ -25,7 +32,7 @@
 #define COORDINATOR_ADDR      0x0000  // короткий адрес координатора завжди 0x0000
 #define COORDINATOR_ENDPOINT  1       // типовий ендпоінт координатора (Z2M/HA) для прийому репортів
 
-static void bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx);
+//static void bind_cb(esp_zb_zdp_status_t zdo_status, void *user_ctx);
 
 
 static const char *TAG = "MAIN";
@@ -126,6 +133,22 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct)
             esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
         }
         break;
+    
+    case ESP_ZB_ZDO_DEVICE_UNAVAILABLE: {
+
+        esp_zb_zdo_device_unavailable_params_t *p =
+            (esp_zb_zdo_device_unavailable_params_t *)
+            esp_zb_app_signal_get_params(signal_struct->p_app_signal);
+
+        ESP_LOGW(TAG,
+                "Device unavailable, IEEE: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                p->long_addr[7], p->long_addr[6],
+                p->long_addr[5], p->long_addr[4],
+                p->long_addr[3], p->long_addr[2],
+                p->long_addr[1], p->long_addr[0]);
+        break;
+        }
+
     default:
         ESP_LOGI(TAG, "ZDO signal: %s (0x%x), status: %s", esp_zb_zdo_signal_to_string(sig_type), sig_type,
                  esp_err_to_name(err_status));
@@ -202,6 +225,7 @@ static void light_sensor_update_task(void *pvParameters)
 {
     for (;;) {
         uint16_t lux = light_sensor_get_value();               // реальне читання з датчика (раз на 30с)
+        lux = lux * KOEFISIENT;
         // uint16_t real_lux_value = lux / 1.2f;
         uint16_t zigbee_value = lux_to_zigbee_value(lux);       // конвертація в формат ZCL
 
@@ -219,7 +243,6 @@ static void light_sensor_update_task(void *pvParameters)
         //                               false);                                                   // check_access — не перевіряти права запису
         // esp_zb_lock_release();
 
-        // Тут стек сам вирішить, слати репорт зараз (delta перевищено) чи чекати max_interval
         vTaskDelay(pdMS_TO_TICKS(LIGHT_SENSOR_UPDATE_INTERVAL_MS));
     }
 }
