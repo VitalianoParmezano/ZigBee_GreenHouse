@@ -10,13 +10,11 @@
 const TOPIC = 'LogicService/bridge/max_umol';
 const TOPIC_SENSOR = 'LogicService/bridge/sensor';
 // CHANNELS_PER_ZONE - та сама константа за змістом, що й у greenhouse-zone-card.js
-// (окремі файли, тож синхронізується вручну). Якщо канал усього один -
-// зайві поля для 2-го й 3-го каналів просто не рендеряться, замість того
-// щоб показувати непотрібний вибір там, де вибирати нічого.
-const CHANNELS_PER_ZONE = 3;
-const CHANNELS = Array.from({ length: CHANNELS_PER_ZONE }, (_, i) => i + 1);
+// (окремі файли, тож синхронізується вручну). 
+const CHANNELS_PER_ZONE = 1;
 const LUX_TO_UMOL_DIVIDER = 69; // Коефіцієнт для перетворення lux в μmol/m²/s
 const NUMBERS_AFTER_COMMA_SENSOR_VALUE = 2;
+const CHANNELS = Array.from({ length: CHANNELS_PER_ZONE }, (_, i) => i + 1);
 
 function clampUmol(value) {
     const n = Number(value);
@@ -110,6 +108,7 @@ class GreenhouseMaxUmolCard extends HTMLElement {
             this._sensorValue = clampUmol(val);
             const sensorEl = this.querySelector('#ghmu-sensor-val');
             if (sensorEl) {
+                //sensorEl.textContent = (this._sensorValue * 1).toFixed(NUMBERS_AFTER_COMMA_SENSOR_VALUE);
                 sensorEl.textContent = (this._sensorValue / LUX_TO_UMOL_DIVIDER).toFixed(NUMBERS_AFTER_COMMA_SENSOR_VALUE);
             }
         }
