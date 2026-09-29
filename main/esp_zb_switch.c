@@ -49,11 +49,15 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
             if (status == ESP_OK) { // Якщо ми успішно знайшли мережу і приєдналися до неї
                 esp_zb_ieee_addr_t ieee; // Змінна для зберігання нашої довгої MAC-адреси
                 esp_zb_get_long_address(ieee); // Зчитуємо власну MAC-адресу
-                ESP_LOGI(TAG, "✅ Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+                ESP_LOGI(TAG, "Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, встановлюю вимикаю усі канали",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
+                    
+                for (int i = 1; i <= NUMBER_OF_CHANNEL_ENDPOINTS; i++){
+                    set_level_of_driver_and_strip(0, i);
+                }
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
-                ESP_LOGW(TAG, "❌ Пошук мережі невдалий. Повторна спроба через 5 секунд...");
+                ESP_LOGW(TAG, "Пошук мережі невдалий. Повторна спроба через 5 секунд...");
                 vTaskDelay(pdMS_TO_TICKS(5000)); // Засинаємо на 5 секунд (функція FreeRTOS)
                 // Знову запускаємо пошук мережі
                 esp_zb_bdb_start_top_level_commissioning(ESP_ZB_BDB_MODE_NETWORK_STEERING);
