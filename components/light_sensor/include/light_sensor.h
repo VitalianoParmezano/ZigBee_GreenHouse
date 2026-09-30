@@ -8,7 +8,7 @@
 #define I2C_MASTER_FREQ_HZ          100000      /*!< Частота I2C (100 кГц) */
 #define I2C_MASTER_TIMEOUT_MS       1000
 
-#define SENSOR_ADDR                 0x23        /*!< I2C адреса сенсора BH1750 */
+#define SENSOR_ADDR                 0x23        /*!< I2C адреса сенсора*/
 #define SENSOR_POWER_ON_ADDR        0x01        /*!< Команда увімкнення (Power On) */
 #define SENSOR_POWER_OFF_ADDR       0x00        /*!< Команда вимкнення (Power Down) */
 

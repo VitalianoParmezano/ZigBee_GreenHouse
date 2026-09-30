@@ -30,12 +30,12 @@ void light_sensor_init(void) {
     };
     ESP_ERROR_CHECK(i2c_master_bus_add_device(bus_handle, &lux_meter_config, &lux_meter_handle));
     
-    // ОБОВ'ЯЗКОВА ПАУЗА: даємо напрузі на лініях I2C стабілізуватися після старту
+    // Час для стабілізації лінії після старту
     vTaskDelay(pdMS_TO_TICKS(150));
 }
 
 void light_sensor_power_on(void) {
-    // Просто будимо датчик (0x01)
+    // Включення датчика (0x01)
     uint8_t power_on_cmd[1] = {SENSOR_POWER_ON_ADDR};
     esp_err_t err = i2c_master_transmit(lux_meter_handle, power_on_cmd, sizeof(power_on_cmd), I2C_MASTER_TIMEOUT_MS);
     if (err != ESP_OK) {
@@ -55,17 +55,16 @@ uint16_t light_sensor_get_value(void) {
     uint8_t send_data[1] = {SENSOR_ADDR_START_MEASUREMENT};
     uint8_t receive_data[DATA_LENGTH] = {0};
 
-    // 1. Посилаємо команду на початок вимірювання (ОДНОРАЗОВО)
+    // Посилання команди про початок вимірювання (одноразово)
     esp_err_t err = i2c_master_transmit(lux_meter_handle, send_data, sizeof(send_data), I2C_MASTER_TIMEOUT_MS);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_SENSOR, "I2C transmit error: %s", esp_err_to_name(err));
         return 0;
     }
 
-    // 2. Даємо датчику BH1750 час на накопичення світла (180 мс)
     vTaskDelay(pdMS_TO_TICKS(180));
 
-    // 3. Зчитуємо готовий результат
+    // Читання результату
     err = i2c_master_receive(lux_meter_handle, receive_data, sizeof(receive_data), I2C_MASTER_TIMEOUT_MS);
     if (err != ESP_OK) {
         ESP_LOGE(TAG_SENSOR, "I2C receive error: %s", esp_err_to_name(err));
