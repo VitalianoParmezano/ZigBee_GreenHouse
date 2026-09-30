@@ -32,7 +32,7 @@ dependencies:
   examples_utils:
     dependencies: []
     source:
-      path: C:\Espressif\frameworks\esp-idf-v5.5.4\examples\zigbee\zb_common_components\examples_utils
+      path: C:\esp\v5.5.4\esp-idf\examples\zigbee\zb_common_components\examples_utils
       type: local
     version: '*'
   idf:
