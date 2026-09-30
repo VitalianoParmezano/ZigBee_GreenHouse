@@ -68,9 +68,10 @@ class SchedulerService:
 
         log.info(
             "Старт LogicService (dry_run=%s, tick=%ss, zones=%s x channels=%s, "
-            "log_level=%s, log_dir=%s, retention=%sд)",
+            "log_level=%s, log_dir=%s, retention=%sд, transition=%s)",
             settings.dry_run, settings.tick_interval_sec, settings.zones,
             settings.channels_per_zone, settings.log_level, log_dir, settings.log_retention_days,
+            settings.transition,
         )
         try:
             self.state.connect()

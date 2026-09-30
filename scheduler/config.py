@@ -53,6 +53,7 @@ class Settings:
     log_level: str
     log_dir: str
     log_retention_days: int
+    transition:Optional[int] = 0
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "Settings":
@@ -66,10 +67,13 @@ class Settings:
             mqtt_user=(mqtt.get("user") or None),
             mqtt_password=(mqtt.get("password") or None),
             mqtt_base_topic=str(mqtt.get("base_topic", "zigbee2mqtt")),
+
             zones=int(sched.get("zones", 6)),
             channels_per_zone=int(sched.get("channels_per_zone", 3)),
             tick_interval_sec=int(sched.get("tick_interval_sec", 30)),
             dry_run=bool(sched.get("dry_run", True)),
+            transition=int(sched.get("transition", 0)),
+
             log_level=str(logging_cfg.get("level", "INFO")).upper(),
             log_dir=str(logging_cfg.get("dir", "logs")),
             log_retention_days=int(logging_cfg.get("retention_days", 7)),

@@ -346,10 +346,11 @@ class MqttState:
         log.info("bridge/max_umol: успішно оновлено максимальні μmol: %s", data)
 
     # ------------------------------------------------------------------ #
-    def _publish_zigbee_brightness(self, zone: int, channel: int, brightness_pct: int, transition: float = 2.0) -> None:
+    def _publish_zigbee_brightness(self, zone: int, channel: int, brightness_pct: int) -> None:
         """Єдине, що йде в реальний zigbee2mqtt - ESP розуміє тільки це.
         Шлемо і `state`, і `brightness` явно - не покладаємось на те, що
         прошивка сама вимкне світло при brightness=0."""
+        transition = settings.transition
         base = settings.mqtt_base_topic
         group = group_name(zone, channel)
         topic = f"{base}/{group}/set"
