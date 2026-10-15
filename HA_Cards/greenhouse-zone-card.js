@@ -23,9 +23,27 @@ const ZONES = 8;
 const CHANNELS_PER_ZONE = 3;
 const SCENARIO_SLOTS = 12;
 const CONTROL_PREFIX = 'LogicService';
-const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV1';
+const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV2'; // V2: рядки містять % для всіх каналів
 const DEBUG_UMOL_SENSOR = true; // В авторежимі чи показувати ручний умоль сенсор (повзунок який імітує датчик) true = показати
 const ZONE_LABEL = 'Хатка'; // Константа яка використовується для показу кінцевому користувачу
+
+// ---- Налаштування каналів (індекс 0 = канал 1, 1 = канал 2, ...) ----
+// Скільки мікромолей (µmol/m²/s) дає канал при 100% потужності.
+const CHANNEL_MAX_UMOL = [300, 200, 100];
+// Назви та кольори каналів у інтерфейсі.
+const CHANNEL_LABELS = ['Red', 'White', 'Blue'];
+const CHANNEL_COLORS = ['#e4464d', '#cec5ac', '#397eed'];
+// ---- Розміри шрифтів (px) ----
+const ZONE_TITLE_FONT_SIZE = 16;  // назва зони на плитці ("Хатка 1")
+const ZONE_STATUS_FONT_SIZE = 14; // статус зони на плитці ("Увімкнено · 75%")
+const TITLE_FONT_SIZE = 18;       // заголовок вікна ("Керування — Хатка 1")
+const TEXT_FONT_SIZE = 14;        // увесь звичайний текст у вікні: режими, підписи, кнопки, підказки
+const NUMBER_FONT_SIZE = 14;      // числа поза таблицею (ручний режим, поле датчика)
+const TABLE_FONT_SIZE = 16;       // таблиця розкладу (таймер/авто): час, %, µmol, №, шапка
+const SMALL_FONT_SIZE = 12;       // дрібний текст: бейдж офлайн, id пристрою, підзаголовок тоста
+// true = брати максимум µmol з LogicService/bridge/max_umol (якщо там є значення),
+// false = завжди використовувати CHANNEL_MAX_UMOL зверху.
+const MAX_UMOL_FROM_MQTT = true;
 
 function groupName(zone, channel) {
     return `Zone_${zone}_Channel_${channel}`;
@@ -60,6 +78,19 @@ function clampUmol(value) {
     const n = Number(value);
     if (Number.isNaN(n)) return 0;
     return Math.max(0, Math.round(n));
+}
+
+// Мікромолі: максимум 1 знак після коми, без зайвого ",0" (12,5 / 12 / 0,3).
+function formatUmol(value) {
+    const n = Number(value);
+    if (Number.isNaN(n)) return '0';
+    return String(Math.round(n * 10) / 10).replace('.', ',');
+}
+
+// '#rrggbb' -> [r, g, b]
+function hexToRgb(hex) {
+    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex).trim());
+    return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [255, 255, 255];
 }
 
 const DEFAULT_CHANNEL_STATE = { mode: 'manual', scenarios: [], brightness: 0, state: 'OFF' };
@@ -184,17 +215,14 @@ class GreenhouseZoneCard extends HTMLElement {
 
         if (!this._modalState || !this._modalState.open) return;
 
-        const { zone, activeChannel } = this._modalState;
+        const { zone } = this._modalState;
         const info = parseGroupName(group);
         if (!info || info.zone !== zone) return;
 
         // Режим спільний на зону - зміна будь-якого каналу могла його стосуватись,
         // тож пілюлі оновлюються завжди.
         this._renderModeRow();
-
-        if (info.channel === activeChannel) {
-            this._refreshChannelSpecificValues();
-        }
+        this._refreshChannelSpecificValues();
     }
 
     // { zone, device, status: 'offline' | 'online' }
@@ -320,7 +348,7 @@ class GreenhouseZoneCard extends HTMLElement {
             border: 1px solid rgba(255, 255, 255, 0.15);
             box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
             border-radius: 16px;
-
+            
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -343,13 +371,13 @@ class GreenhouseZoneCard extends HTMLElement {
         }
 
         .zone-title {
-            font-size: 16px;
+            font-size: ${ZONE_TITLE_FONT_SIZE}px;
             font-weight: 600;
             margin-bottom: 8px;
         }
 
         .zone-status {
-            font-size: 14px;
+            font-size: ${ZONE_STATUS_FONT_SIZE}px;
             opacity: 0.6;
         }
 
@@ -365,7 +393,7 @@ class GreenhouseZoneCard extends HTMLElement {
             color: #f44336;
             padding: 4px 8px;
             border-radius: 999px;
-            font-size: 12px;
+            font-size: ${SMALL_FONT_SIZE}px;
             font-weight: 600;
             cursor: pointer;
             z-index: 10;
@@ -470,8 +498,8 @@ class GreenhouseZoneCard extends HTMLElement {
                 .gh-toast-offline .gh-toast-icon { color: #f44336; }
                 .gh-toast-online .gh-toast-icon { color: #4caf50; }
                 .gh-toast-text { flex: 1; }
-                .gh-toast-title { font-size: 13px; font-weight: 600; }
-                .gh-toast-sub { font-size: 12px; opacity: 0.7; margin-top: 2px; }
+                .gh-toast-title { font-size: ${TEXT_FONT_SIZE}px; font-weight: 600; }
+                .gh-toast-sub { font-size: ${SMALL_FONT_SIZE}px; opacity: 0.7; margin-top: 2px; }
                 .gh-toast-close {
                     background: none;
                     border: none;
@@ -563,7 +591,7 @@ class GreenhouseZoneCard extends HTMLElement {
                     padding: 16px 20px;
                     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
                 }
-                .gh-modal-title { font-size: 18px; font-weight: 600; }
+                .gh-modal-title { font-size: ${TITLE_FONT_SIZE}px; font-weight: 600; }
                 .gh-modal-close {
                     background: none;
                     border: none;
@@ -583,7 +611,7 @@ class GreenhouseZoneCard extends HTMLElement {
                     padding: 30px 10px;
                     text-align: center;
                     opacity: 0.6;
-                    font-size: 14px;
+                    font-size: ${TEXT_FONT_SIZE}px;
                 }
                 .gh-offline-item {
                     display: flex;
@@ -595,8 +623,8 @@ class GreenhouseZoneCard extends HTMLElement {
                 .gh-offline-item:last-child { border-bottom: none; }
                 .gh-offline-item ha-icon { color: #f44336; --mdc-icon-size: 20px; }
                 .gh-offline-item-text { flex: 1; }
-                .gh-offline-item-zone { font-size: 14px; font-weight: 600; }
-                .gh-offline-item-device { font-size: 12px; opacity: 0.6; font-family: monospace; }
+                .gh-offline-item-zone { font-size: ${TEXT_FONT_SIZE}px; font-weight: 600; }
+                .gh-offline-item-device { font-size: ${SMALL_FONT_SIZE}px; opacity: 0.6; font-family: monospace; }
             </style>
             <div class="gh-modal-box">
                 <div class="gh-modal-header">
@@ -650,7 +678,7 @@ class GreenhouseZoneCard extends HTMLElement {
 
     // Модальне вікно зони
     _openZoneModal(zone) {
-        this._modalState = { open: true, zone, activeChannel: 1 };
+        this._modalState = { open: true, zone };
 
         const overlay = document.createElement('div');
         overlay.className = 'gh-modal-overlay';
@@ -670,12 +698,12 @@ class GreenhouseZoneCard extends HTMLElement {
                     z-index: 999999;
                     backdrop-filter: blur(4px);
                     -webkit-backdrop-filter: blur(4px);
-                }
+                        }
                 .gh-modal-box {
                     background: var(--card-background-color, #1c1c1c);
                     color: var(--primary-text-color);
                     border-radius: 16px;
-                    width: min(560px, 92vw);
+                    width: min(780px, 96vw);
                     max-height: 88vh;
                     display: flex;
                     flex-direction: column;
@@ -691,7 +719,7 @@ class GreenhouseZoneCard extends HTMLElement {
                     border-bottom: 1px solid rgba(255, 255, 255, 0.1);
                 }
                 .gh-modal-title {
-                    font-size: 18px;
+                    font-size: ${TITLE_FONT_SIZE}px;
                     font-weight: 600;
                 }
                 .gh-modal-close {
@@ -886,6 +914,156 @@ class GreenhouseZoneCard extends HTMLElement {
                     opacity: 0.55;
                     margin-top: 8px;
                 }
+                /* ---- Таблиця розкладу ---- */
+                .gh-sched-wrap { overflow-x: auto; padding-bottom: 4px; }
+                .gh-sched .gh-scenario-row {
+                    grid-template-columns: 26px 100px repeat(var(--n), minmax(46px, 1fr)) repeat(var(--n), minmax(48px, 1fr)) minmax(56px, 1fr);
+                }
+                .gh-sched .gh-scenario-row input[type="number"] { width: 100%; min-width: 0; text-align: center; padding: 0 2px; }
+                .gh-sched .gh-scenario-row input[type="number"]::-webkit-outer-spin-button,
+                .gh-sched .gh-scenario-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+                .gh-sched .gh-scenario-row input[type="number"] { -moz-appearance: textfield; }
+                .gh-sched-group, .gh-sched-head { margin-bottom: 4px; }
+                .gh-sched-group > div {
+                    font-size: 11px; opacity: 0.6; text-align: center; text-transform: uppercase;
+                    letter-spacing: 0.04em; border-bottom: 1px solid rgba(255, 255, 255, 0.15); padding-bottom: 2px;
+                }
+                .gh-sched-head > div {
+                    font-size: 12px; opacity: 0.85; text-align: center; white-space: nowrap;
+                    display: flex; align-items: center; justify-content: center; gap: 4px;
+                }
+                .gh-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+                .gh-sched .gh-scenario-row { margin-bottom: 0; padding: 3px 0; }
+                .gh-sched-group, .gh-sched-head { margin-bottom: 0; }
+                /* µmol - розрахункові, не редагуються: сірі, приглушені, без рамки */
+                .gh-sched .gh-slot-calc {
+                    background: rgba(255, 255, 255, 0.07);
+                    border-color: transparent;
+                    cursor: default;
+                    user-select: none;
+                }
+                .gh-sched .gh-slot-calc.total {
+                    background: rgba(255, 255, 255, 0.07);
+                    color: var(--primary-text-color);
+                }
+                /* вертикальна риска між % та µmol */
+                .gh-sched .gh-umol-first { position: relative; }
+                .gh-sched .gh-umol-first::before {
+                    content: ''; position: absolute; left: -5px; top: -3px; bottom: -3px;
+                    width: 1px; background: rgba(255, 255, 255, 0.28);
+                }
+                /* ---- Ручний режим ---- */
+                .gh-m-total { margin: 4px 0 6px 0; }
+                .gh-m-legend-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+                .gh-m-total-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 8px; }
+                .gh-m-small { font-size: 13px; opacity: 0.7; }
+                .gh-m-power { font-weight: 700; font-variant-numeric: tabular-nums; }
+                .gh-m-power span { font-size: 14px; font-weight: 400; opacity: 0.7; }
+                .gh-m-percent { font-weight: 650; font-variant-numeric: tabular-nums; }
+                .gh-m-stack { display: flex; height: 12px; flex: 1 1 auto; min-width: 0; background: rgba(255, 255, 255, 0.12); border-radius: 12px; overflow: hidden; }
+                .gh-m-stack > div { height: 100%; transition: width 0.12s; }
+                .gh-m-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; opacity: 0.85; }
+                .gh-m-legend span { display: flex; align-items: center; gap: 5px; }
+                .gh-m-channel { padding: 16px 2px 14px 2px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+                .gh-m-channel:last-of-type { border-bottom: 0; }
+                .gh-m-ch-top, .gh-m-ch-bottom { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+                .gh-m-ch-top { margin-bottom: 10px; }
+                .gh-m-ch-name { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+                .gh-orb { width: 14px; height: 14px; border-radius: 50%; display: inline-block; box-shadow: inset -2px -2px 4px rgba(0,0,0,0.35), inset 2px 2px 4px rgba(255,255,255,0.35); }
+                .gh-m-ch-value { font-size: 14px; font-variant-numeric: tabular-nums; }
+                .gh-m-ch-bottom { margin-top: 8px; font-size: 13px; opacity: 0.85; }
+                .gh-m-ch-bottom input[type="number"] {
+                    width: 64px; padding: 5px 8px; border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.2);
+                    background: rgba(255, 255, 255, 0.06); color: var(--primary-text-color);
+                }
+                .gh-m-channel-simple { padding: 14px 0; }
+                .gh-m-range { -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; cursor: pointer; display: block; margin: 0; --fill: 0%; --accent: #888; }
+                .gh-m-range::-webkit-slider-runnable-track { height: 12px; background: linear-gradient(to right, var(--accent) var(--fill), rgba(255,255,255,0.12) var(--fill)); border-radius: 12px; }
+                .gh-m-range::-moz-range-track { height: 12px; background: linear-gradient(to right, var(--accent) var(--fill), rgba(255,255,255,0.12) var(--fill)); border-radius: 12px; }
+                .gh-m-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); border: 2px solid var(--accent); box-shadow: 0 1px 6px #0007; margin-top: -5px; }
+                .gh-m-range::-moz-range-thumb { width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 2px solid var(--accent); box-shadow: 0 1px 6px #0007; }
+                /* ---- Ручний режим: один рядок = повзунок | поле % | µmol ---- */
+                .gh-m-channel-simple { padding: 12px 0; }
+                .gh-manual-row { display: flex; align-items: center; gap: 10px; }
+                .gh-manual-row .gh-m-range { flex: 1 1 auto; width: auto; min-width: 0; }
+                .gh-manual-number {
+                    flex: 0 0 auto; width: 56px; box-sizing: border-box; padding: 5px 6px; text-align: center;
+                    border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.2);
+                    background: rgba(255, 255, 255, 0.06); color: var(--primary-text-color);
+                    -moz-appearance: textfield;
+                }
+                .gh-manual-number::-webkit-outer-spin-button,
+                .gh-manual-number::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+                .gh-manual-total-pct { border-color: transparent; background: transparent; }
+                .gh-manual-percent { flex: 0 0 auto; margin-left: -6px; opacity: 0.8; }
+                .gh-manual-umol { flex: 0 0 82px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; opacity: 0.85; }
+                /* ---- Єдина типографіка модалки: весь текст однаковий, усі числа однакові ---- */
+                .gh-modal-box .gh-pill,
+                .gh-modal-box .gh-section-title,
+                .gh-modal-box .gh-field-label,
+                .gh-modal-box .gh-hint,
+                .gh-modal-box .gh-secondary-btn,
+                .gh-modal-box .gh-save-btn,
+                .gh-modal-box .gh-toggle-btn,
+                .gh-modal-box .gh-sched-head > div,
+                .gh-modal-box .gh-m-small,
+                .gh-modal-box .gh-m-ch-name,
+                .gh-modal-box .gh-m-ch-bottom,
+                .gh-modal-box .gh-m-legend,
+                .gh-modal-box .gh-m-legend span,
+                .gh-modal-box .gh-auto-placeholder {
+                    font-family: inherit !important;
+                    font-size: ${TEXT_FONT_SIZE}px !important;
+                    font-weight: 500 !important;
+                    line-height: 1.3 !important;
+                    text-transform: none !important;
+                    letter-spacing: normal !important;
+                    opacity: 1 !important;
+                }
+                .gh-modal-box .gh-slot-percent,
+                .gh-modal-box .gh-time-part,
+                .gh-modal-box .gh-scenario-index,
+                .gh-modal-box .gh-slot-calc,
+                .gh-modal-box .gh-m-power,
+                .gh-modal-box .gh-m-power span,
+                .gh-modal-box .gh-m-percent,
+                .gh-modal-box .gh-m-ch-value,
+                .gh-modal-box .gh-m-number,
+                .gh-modal-box .gh-manual-number,
+                .gh-modal-box .gh-manual-percent,
+                .gh-modal-box .gh-manual-umol,
+                .gh-modal-box .gh-field-row input[type="number"],
+                .gh-modal-box #gh-auto-sensor-number {
+                    font-family: inherit !important;
+                    font-size: ${NUMBER_FONT_SIZE}px !important;
+                    font-weight: 700 !important;
+                    font-variant-numeric: tabular-nums;
+                    opacity: 1 !important;
+                    -webkit-text-stroke: 0 !important;
+                }
+                /* Один шрифт на все: інпути за замовчуванням беруть системний шрифт браузера,
+                   тому сімейство задається явно для всіх елементів модалки. */
+                .gh-modal-box, .gh-modal-box * {
+                    font-family: var(--ha-font-family-body, var(--paper-font-body1_-_font-family, Roboto, 'Noto Sans', 'Helvetica Neue', Arial, sans-serif)) !important;
+                    font-style: normal !important;
+                    -webkit-text-stroke: 0 !important;
+                    text-shadow: none !important;
+                    font-synthesis: none;
+                }
+                .gh-modal-box .gh-time-sep {
+                    font-size: ${NUMBER_FONT_SIZE}px !important;
+                    font-weight: 700 !important;
+                    opacity: 0.6;
+                }
+                /* Розмір шрифту таблиці розкладу - керується константою TABLE_FONT_SIZE зверху файлу */
+                .gh-modal-box .gh-sched .gh-slot-percent,
+                .gh-modal-box .gh-sched .gh-time-part,
+                .gh-modal-box .gh-sched .gh-time-sep,
+                .gh-modal-box .gh-sched .gh-scenario-index,
+                .gh-modal-box .gh-sched .gh-slot-calc,
+                .gh-modal-box .gh-sched .gh-sched-head > div {
+                    font-size: ${TABLE_FONT_SIZE}px !important;
+                }
                 .gh-auto-placeholder {
                     padding: 40px 10px;
                     text-align: center;
@@ -900,7 +1078,6 @@ class GreenhouseZoneCard extends HTMLElement {
                 </div>
 
                 <div class="gh-mode-row" id="gh-mode-row"></div>
-                <div class="gh-tabs-row" id="gh-tabs-row"></div>
 
                 <div class="gh-modal-body" id="gh-modal-body"></div>
             </div>
@@ -915,13 +1092,33 @@ class GreenhouseZoneCard extends HTMLElement {
 
         overlay.querySelector('#gh-modal-close').addEventListener('click', () => this._closeModal());
 
+        // Клік/тап у числове або часове поле виділяє весь вміст - нове значення
+        // просто замінює старе, стирати вручну не треба.
+        const isSelectable = (el) => el && el.tagName === 'INPUT' &&
+            (el.type === 'number' || el.classList.contains('gh-time-part'));
+        overlay.addEventListener('focusin', (e) => {
+            const t = e.target;
+            if (!isSelectable(t)) return;
+            t._ghJustFocused = true;
+            setTimeout(() => { try { t.select(); } catch (_) {} t._ghJustFocused = false; }, 0);
+        });
+        // Без цього mouseup після фокусу скидає виділення (Chrome/Safari).
+        overlay.addEventListener('mouseup', (e) => {
+            if (isSelectable(e.target) && e.target._ghJustFocused !== undefined) {
+                if (e.target._selectOnMouseUp) { e.preventDefault(); }
+            }
+        });
+        overlay.addEventListener('mousedown', (e) => {
+            const t = e.target;
+            if (isSelectable(t)) t._selectOnMouseUp = document.activeElement !== t;
+        });
+
         this._escHandler = (e) => {
             if (e.key === 'Escape') this._closeModal();
         };
         document.addEventListener('keydown', this._escHandler);
 
         this._renderModeRow();
-        this._renderTabsRow();
         this._renderModalBody();
     }
 
@@ -962,45 +1159,34 @@ class GreenhouseZoneCard extends HTMLElement {
         });
     }
 
-    _renderTabsRow() {
-        const { activeChannel } = this._modalState;
-        const row = this._modalRoot.querySelector('#gh-tabs-row');
+    _channelIndexes() {
+        return Array.from({ length: CHANNELS_PER_ZONE }, (_, idx) => idx + 1);
+    }
 
-        // Якщо канал усього один - вибирати нічого, перемикач лише займав би
-        // місце. activeChannel і так завжди 1 (див. _openZoneModal), тож
-        // решта коду продовжує працювати без жодних додаткових умов.
-        if (CHANNELS_PER_ZONE <= 1) {
-            row.style.display = 'none';
-            row.innerHTML = '';
-            return;
+    _channelLabel(ch) { return CHANNEL_LABELS[ch - 1] || `К${ch}`; }
+    _channelColor(ch) { return CHANNEL_COLORS[ch - 1] || '#03a9f4'; }
+
+    // Скільки µmol дає канал при 100%.
+    _getMaxUmol(ch) {
+        if (MAX_UMOL_FROM_MQTT && this._maxUmolState) {
+            const v = Number(this._maxUmolState[`max_umol_channel${ch}`]);
+            if (v) return v;
         }
-        row.style.display = '';
-
-        row.innerHTML = Array.from({ length: CHANNELS_PER_ZONE }, (_, idx) => idx + 1)
-            .map((ch) => `<div class="gh-pill ${ch === activeChannel ? 'active' : ''}" data-channel="${ch}">Канал ${ch}</div>`)
-            .join('');
-
-        row.querySelectorAll('.gh-pill').forEach((el) => {
-            el.addEventListener('click', () => {
-                this._modalState.activeChannel = Number(el.dataset.channel);
-                this._renderTabsRow();
-                this._renderModalBody();
-            });
-        });
+        return Number(CHANNEL_MAX_UMOL[ch - 1]) || 0;
     }
 
     _renderModalBody() {
-        const { zone, activeChannel } = this._modalState;
+        const { zone } = this._modalState;
         const zoneMode = this._getChannelState(zone, 1).mode; // спільний на всю зону
         const body = this._modalRoot.querySelector('#gh-modal-body');
 
         let html;
         if (zoneMode === 'manual') {
-            html = this._renderManualSection(zone, activeChannel);
+            html = this._renderManualSection(zone);
         } else if (zoneMode === 'timer') {
-            html = this._renderTimerSection(zone, activeChannel);
+            html = this._renderTimerSection(zone);
         } else if (zoneMode === 'auto') {
-            html = this._renderAutoSection(zone, activeChannel);
+            html = this._renderAutoSection(zone);
         } else {
             html = `<div class="gh-auto-placeholder">Невідомий режим</div>`;
         }
@@ -1008,94 +1194,241 @@ class GreenhouseZoneCard extends HTMLElement {
         body.innerHTML = html;
 
         if (zoneMode === 'manual') {
-            this._attachManualListeners(zone, activeChannel);
+            this._attachManualListeners(zone);
         } else if (zoneMode === 'timer') {
-            this._attachTimerListeners(zone, activeChannel);
+            this._attachTimerListeners(zone);
         } else if (zoneMode === 'auto') {
-            this._attachAutoListeners(zone, activeChannel);
+            this._attachAutoListeners(zone);
         }
     }
 
-    _renderManualSection(zone, channel) {
-        const cfg = this._getChannelState(zone, channel);
-        const isOn = cfg.state === 'ON';
-        const brightnessPct = cfg.brightness || 0;
+    // Ручний режим: лише три кольорові повзунки без підписів та чисел.
+_renderManualSection(zone) {
+    const channelsHtml = this._channelIndexes().map((ch) => {
+        const pct = clampPercent(
+            this._getChannelState(zone, ch).brightness || 0
+        );
+        const color = this._channelColor(ch);
 
         return `
-            <div class="gh-section-title">Ручний режим (Канал ${channel})</div>
-            <div class="gh-field-row">
-                <div class="gh-field-label">Стан</div>
-                <button class="gh-toggle-btn ${isOn ? 'on' : ''}" id="gh-manual-toggle">${isOn ? 'Увімкнено' : 'Вимкнено'}</button>
-            </div>
-            <div class="gh-field-row">
-                <div class="gh-field-label">Яскравість</div>
-                <input type="range" min="0" max="100" id="gh-manual-range" value="${brightnessPct}">
-                <input type="number" min="0" max="100" id="gh-manual-number" value="${brightnessPct}">
+            <div class="gh-m-channel-simple">
+                <div class="gh-manual-row">
+                    <input
+                        type="range"
+                        class="gh-m-range"
+                        data-ch="${ch}"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value="${pct}"
+                        aria-label="Канал ${ch}"
+                        style="--accent:${color}; --fill:${pct}%"
+                    >
+
+                    <input
+                        type="number"
+                        class="gh-manual-number"
+                        data-ch="${ch}"
+                        min="0"
+                        max="100"
+                        value="${pct}"
+                    >
+
+                    <span class="gh-manual-percent">%</span>
+
+                    <span
+                        class="gh-manual-umol"
+                        data-ch="${ch}"
+                    >${formatUmol(this._getMaxUmol(ch) * pct / 100)} µmol</span>
+                </div>
             </div>
         `;
+    }).join('');
+
+    return `
+        <div class="gh-m-channel-simple gh-m-total">
+            <div class="gh-manual-row">
+                <div class="gh-m-stack" id="gh-manual-stack">
+                    ${this._channelIndexes().map((ch) => `
+                        <div
+                            data-ch="${ch}"
+                            style="background:${this._channelColor(ch)};width:0%"
+                        ></div>
+                    `).join('')}
+                </div>
+
+                <span class="gh-manual-number gh-manual-total-pct" id="gh-manual-total-pct">0</span>
+
+                <span class="gh-manual-percent">%</span>
+
+                <span class="gh-manual-umol" id="gh-manual-total">0 µmol</span>
+            </div>
+        </div>
+
+        ${channelsHtml}
+
+        <div class="gh-btn-row">
+            <button class="gh-secondary-btn" id="gh-m-off">
+                Вимкнути все
+            </button>
+            <button class="gh-secondary-btn" id="gh-m-max">
+                Все на 100%
+            </button>
+        </div>
+    `;
     }
 
-    _attachManualListeners(zone, channel) {
-        const toggleBtn = this._modalRoot.querySelector('#gh-manual-toggle');
-        const range = this._modalRoot.querySelector('#gh-manual-range');
-        const number = this._modalRoot.querySelector('#gh-manual-number');
+_updateManualDisplay() {
+    if (!this._modalRoot) return;
 
-        // LogicService не має окремого поля "state" для запису - на виході
-        // воно похідне від brightness (brightness>0 -> ON), тому і тумблер,
-        // і повзунок керують лише brightness.
-        if (toggleBtn) {
-            toggleBtn.addEventListener('click', () => {
-                const willTurnOn = !toggleBtn.classList.contains('on');
-                const cfg = this._getChannelState(zone, channel);
-                const targetBrightness = willTurnOn ? (cfg.brightness > 0 ? cfg.brightness : 100) : 0;
+    let totalUmol = 0;
+    let maxUmol = 0;
 
-                this._publishSet(zone, channel, { brightness: targetBrightness });
+    this._channelIndexes().forEach((ch) => {
+        const range = this._modalRoot.querySelector(
+            `.gh-m-range[data-ch="${ch}"]`
+        );
 
-                toggleBtn.classList.toggle('on', willTurnOn);
-                toggleBtn.innerText = willTurnOn ? 'Увімкнено' : 'Вимкнено';
-                if (range) range.value = targetBrightness;
-                if (number) number.value = targetBrightness;
+        if (!range) return;
 
-                this._channelState[groupName(zone, channel)] = {
-                    ...cfg, brightness: targetBrightness, state: willTurnOn ? 'ON' : 'OFF',
-                };
-                this._updateZoneStatuses();
+        const pct = clampPercent(range.value);
+        const channelMax = this._getMaxUmol(ch);
+        const umol = channelMax * pct / 100;
+
+        totalUmol += umol;
+        maxUmol += channelMax;
+
+        range.style.setProperty('--fill', `${pct}%`);
+
+        const number = this._modalRoot.querySelector(
+            `.gh-manual-number[data-ch="${ch}"]`
+        );
+
+        const umolText = this._modalRoot.querySelector(
+            `.gh-manual-umol[data-ch="${ch}"]`
+        );
+
+        const segment = this._modalRoot.querySelector(
+            `#gh-manual-stack [data-ch="${ch}"]`
+        );
+
+        if (number && document.activeElement !== number) {
+            number.value = pct;
+        }
+
+        if (umolText) {
+            umolText.textContent = `${formatUmol(umol)} µmol`;
+        }
+
+        if (segment) {
+            segment.style.width = `${
+                maxUmol ? (umol / this._channelIndexes().reduce(
+                    (sum, c) => sum + this._getMaxUmol(c), 0
+                )) * 100 : 0
+            }%`;
+        }
+    });
+
+    const total = this._modalRoot.querySelector('#gh-manual-total');
+    const totalPct = this._modalRoot.querySelector('#gh-manual-total-pct');
+
+    if (total) {
+        total.textContent =
+            `${formatUmol(totalUmol)} µmol`;
+    }
+
+    if (totalPct) {
+        totalPct.textContent = String(
+            maxUmol ? Math.round(totalUmol / maxUmol * 100) : 0
+        );
+    }
+}
+
+_attachManualListeners(zone) {
+    const commit = (ch, value) => {
+        const pct = clampPercent(value);
+
+        const range = this._modalRoot.querySelector(
+            `.gh-m-range[data-ch="${ch}"]`
+        );
+
+        const number = this._modalRoot.querySelector(
+            `.gh-manual-number[data-ch="${ch}"]`
+        );
+
+        if (range) range.value = pct;
+        if (number) number.value = pct;
+
+        this._publishSet(zone, ch, { brightness: pct });
+
+        const cfg = this._getChannelState(zone, ch);
+
+        this._channelState[groupName(zone, ch)] = {
+            ...cfg,
+            brightness: pct,
+            state: pct > 0 ? 'ON' : 'OFF'
+        };
+
+        this._updateZoneStatuses();
+        this._updateManualDisplay();
+    };
+
+    this._channelIndexes().forEach((ch) => {
+        const range = this._modalRoot.querySelector(
+            `.gh-m-range[data-ch="${ch}"]`
+        );
+
+        const number = this._modalRoot.querySelector(
+            `.gh-manual-number[data-ch="${ch}"]`
+        );
+
+        if (range) {
+            range.addEventListener('input', () => {
+                if (number) number.value = range.value;
+                this._updateManualDisplay();
+            });
+
+            range.addEventListener('change', () => {
+                commit(ch, range.value);
             });
         }
 
-        if (range && number) {
-            const sync = (value) => {
-                range.value = value;
-                number.value = value;
-            };
-            const commit = (value) => {
-                const clamped = clampPercent(value);
-                sync(clamped);
+        if (number) {
+            number.addEventListener('input', () => {
+                const pct = clampPercent(number.value);
 
-                this._publishSet(zone, channel, { brightness: clamped });
+                if (range) range.value = pct;
 
-                const cfg = this._getChannelState(zone, channel);
-                this._channelState[groupName(zone, channel)] = {
-                    ...cfg, brightness: clamped, state: clamped > 0 ? 'ON' : 'OFF',
-                };
+                this._updateManualDisplay();
+            });
 
-                const toggle = this._modalRoot.querySelector('#gh-manual-toggle');
-                if (toggle) {
-                    toggle.classList.toggle('on', clamped > 0);
-                    toggle.innerText = clamped > 0 ? 'Увімкнено' : 'Вимкнено';
-                }
-                this._updateZoneStatuses();
-            };
-
-            range.addEventListener('input', () => sync(range.value));
-            range.addEventListener('change', () => commit(range.value));
-            number.addEventListener('change', () => commit(number.value));
+            number.addEventListener('change', () => {
+                commit(ch, number.value);
+            });
         }
+    });
+
+    const offBtn = this._modalRoot.querySelector('#gh-m-off');
+    const maxBtn = this._modalRoot.querySelector('#gh-m-max');
+
+    if (offBtn) {
+        offBtn.addEventListener('click', () => {
+            this._channelIndexes().forEach((ch) => commit(ch, 0));
+        });
     }
 
-    _renderTimerSection(zone, channel) {
-        return this._renderScheduleSection(zone, channel, false);
+    if (maxBtn) {
+        maxBtn.addEventListener('click', () => {
+            this._channelIndexes().forEach((ch) => commit(ch, 100));
+        });
+    }
 
+    this._updateManualDisplay();
+}
+
+
+    _renderTimerSection(zone) {
+        return this._renderScheduleSection(zone, false);
     }
 
     // ГГ:ХХ ввід (24-годинний формат): два текстові поля на рядок + приховане
@@ -1155,42 +1488,68 @@ class GreenhouseZoneCard extends HTMLElement {
         });
     }
 
-    _collectScenariosFromForm() {
-            // Тепер вона універсальна і шукає єдині класи для обох режимів
-            const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
-            const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
-
-            const scenarios = [];
-            timeInputs.forEach((timeInput, idx) => {
-                const time = timeInput.value;
-                if (!time) return; // порожній час ігнорується
-                const percentRaw = percentInputs[idx].value;
-                scenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
+    // Збирає рядки розкладу з форми: [{ time: 'HH:MM', pct: [p_ch1, p_ch2, ...] }].
+    // Рядки без часу ігноруються, порожній % вважається 0.
+    _collectScheduleRows() {
+        const chs = this._channelIndexes();
+        const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
+        const rows = [];
+        timeInputs.forEach((timeInput, idx) => {
+            const time = timeInput.value;
+            if (!time) return;
+            const pct = chs.map((ch) => {
+                const input = this._modalRoot.querySelector(`.gh-slot-percent[data-slot="${idx}"][data-ch="${ch}"]`);
+                const raw = input ? input.value : '';
+                return clampPercent(raw === '' ? 0 : raw);
             });
-            return scenarios;
+            rows.push({ time, pct });
+        });
+        return rows;
+    }
+
+    // Рядки розкладу зони: час береться як об'єднання часів усіх каналів,
+    // % - з відповідного каналу ('' якщо на цей час у каналу запису немає).
+    _getScheduleRows(zone) {
+        const chs = this._channelIndexes();
+        const byTime = new Map();
+        chs.forEach((ch) => {
+            safeParseScenarios(this._getChannelState(zone, ch).scenarios).forEach((s) => {
+                if (!s || !s.time) return;
+                if (!byTime.has(s.time)) byTime.set(s.time, chs.map(() => ''));
+                byTime.get(s.time)[ch - 1] = s.brightness !== undefined ? s.brightness : '';
+            });
+        });
+        return [...byTime.entries()]
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .slice(0, SCENARIO_SLOTS)
+            .map(([time, pct]) => ({ time, pct }));
+    }
+
+    // Заповнює вже відрендерені поля значеннями з масиву (вставка з буфера /
+    // очищення) без перебудови DOM, щоб не втратити фокус/скрол.
+    _populateScheduleRows(rows) {
+        const chs = this._channelIndexes();
+        const hhInputs = this._modalRoot.querySelectorAll('.gh-time-hh');
+        const mmInputs = this._modalRoot.querySelectorAll('.gh-time-mm');
+        const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
+
+        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
+            const entry = rows[idx] || {};
+            const time = entry.time || '';
+            const [hh, mm] = time.split(':');
+
+            if (hhInputs[idx]) hhInputs[idx].value = hh || '';
+            if (mmInputs[idx]) mmInputs[idx].value = mm || '';
+            if (timeInputs[idx]) timeInputs[idx].value = time;
+
+            chs.forEach((ch) => {
+                const input = this._modalRoot.querySelector(`.gh-slot-percent[data-slot="${idx}"][data-ch="${ch}"]`);
+                if (!input) return;
+                const v = Array.isArray(entry.pct) ? entry.pct[ch - 1] : undefined;
+                input.value = (v === undefined || v === null) ? '' : v;
+            });
         }
-
-    // Заповнює вже відрендерені поля значеннями з масиву (вставка з буфера)
-    // без перебудови DOM, щоб не втратити фокус/скрол.
-    _populateTimerRows(scenarios) {
-            // Універсальні класи, які працюють для обох режимів
-            const hhInputs = this._modalRoot.querySelectorAll('.gh-time-hh');
-            const mmInputs = this._modalRoot.querySelectorAll('.gh-time-mm');
-            const timeInputs = this._modalRoot.querySelectorAll('.gh-slot-time');
-            const percentInputs = this._modalRoot.querySelectorAll('.gh-slot-percent');
-
-            for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
-                const entry = scenarios[idx] || {};
-                const time = entry.time || '';
-                const brightness = entry.brightness !== undefined ? entry.brightness : '';
-                const [hh, mm] = time.split(':');
-
-                if (hhInputs[idx]) hhInputs[idx].value = hh || '';
-                if (mmInputs[idx]) mmInputs[idx].value = mm || '';
-                if (timeInputs[idx]) timeInputs[idx].value = time;
-                if (percentInputs[idx]) percentInputs[idx].value = brightness;
-            }
-        }
+    }
 
     _flashButtonText(btn, text, restoreText, delayMs = 1500) {
         if (!btn) return;
@@ -1200,30 +1559,33 @@ class GreenhouseZoneCard extends HTMLElement {
         }, delayMs);
     }
 
-    _attachTimerListeners(zone, channel) {
-        this._attachScheduleListeners(zone, channel, false);
-        return;
+    _attachTimerListeners(zone) {
+        this._attachScheduleListeners(zone, false);
     }
 
-    // Наступні 2 функції стосуються авто та таймерного режиму, рендерять 
-    // часові мітки і "приклеюють" значення до них
-    // Універсальний рендер розкладу
-    _renderScheduleSection(zone, channel, isAuto = false) {
-        const maxUmol = this._maxUmolState ? (this._maxUmolState[`max_umol_channel${channel}`] || 0) : 0;
-        const cfg = this._getChannelState(zone, channel);
-        // Визначаємо, з якого ключа брати дані
-        const dataKey = 'scenarios';
-        const scenarios = cfg[dataKey] || [];
+    // Спільний рендер таблиці розкладу для таймерного й авто режимів:
+    // № | час | % по кожному каналу | µmol по кожному каналу | сума µmol
+    _renderScheduleSection(zone, isAuto = false) {
+        const chs = this._channelIndexes();
+        const n = chs.length;
+        const rows = this._getScheduleRows(zone);
+
+        const pctHeads = chs.map((ch) =>
+            `<div style="color:${this._channelColor(ch)}"><i class="gh-dot" style="background:${this._channelColor(ch)}"></i>%</div>`).join('');
+        const umolHeads = chs.map((ch, i) =>
+            `<div class="gh-umol-head"><i class="gh-dot" style="background:${this._channelColor(ch)}"></i>µmol</div>`).join('');
 
         let rowsHtml = '';
         for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
-            const existing = scenarios[idx] || {};
-            const time = existing.time || '';
-            const brightness = existing.brightness !== undefined ? existing.brightness : '';
-            const [hh, mm] = time.split(':');
+            const row = rows[idx] || { time: '', pct: [] };
+            const [hh, mm] = row.time.split(':');
 
-            // Рахую значення мікромолей для цього конкретного рядка
-            const rowCalc = brightness !== '' ? Math.round((brightness * maxUmol) / 100) : 0;
+            const pctCells = chs.map((ch) => {
+                                const v = row.pct[ch - 1];
+                return `<input type="number" class="gh-slot-percent" data-slot="${idx}" data-ch="${ch}" min="0" max="100" placeholder="%" value="${v === undefined ? '' : v}" style="color:${this._channelColor(ch)}">`;
+            }).join('');
+            const umolCells = chs.map((ch, i) =>
+                `<div class="gh-slot-calc${i === 0 ? ' gh-umol-first' : ''}" data-calc-slot="${idx}" data-ch="${ch}" style="color:${this._channelColor(ch)}">–</div>`).join('');
 
             rowsHtml += `
                 <div class="gh-scenario-row">
@@ -1234,103 +1596,147 @@ class GreenhouseZoneCard extends HTMLElement {
                         <span class="gh-time-sep">:</span>
                         <input type="text" inputmode="numeric" maxlength="2" placeholder="ХХ"
                                class="gh-time-part gh-time-mm" data-slot="${idx}" value="${mm || ''}">
-                        <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${time}">
+                        <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${row.time}">
                     </div>
-                    <input type="number" data-slot="${idx}" class="gh-slot-percent" min="0" max="100" placeholder="%" value="${brightness}">
-                    <div class="gh-slot-calc" id="gh-calc-slot-${idx}">${rowCalc}</div>
+                    ${pctCells}
+                    ${umolCells}
+                    <div class="gh-slot-calc total" data-total-slot="${idx}">–</div>
                 </div>
             `;
         }
 
-        const title = isAuto ? `Авторозклад (Канал ${channel})` : `Таймерний розклад (Канал ${channel})`;
+        const title = isAuto ? 'Авторозклад' : 'Таймерний розклад';
+        const minWidth = 26 + 100 + (2 * n + 1) * 50 + (2 * n + 3) * 8;
 
         return `
             <div class="gh-section-title">${title}</div>
-            ${rowsHtml}
+            <div class="gh-sched-wrap">
+                <div class="gh-sched" style="--n:${n}; min-width:${minWidth}px">
+                    <div class="gh-scenario-row gh-sched-head">
+                        <div>№</div><div>Час</div>
+                        ${pctHeads}
+                        ${umolHeads}
+                        <div>Σ</div>
+                    </div>
+                    ${rowsHtml}
+                </div>
+            </div>
             <div class="gh-btn-row">
-                <button class="gh-secondary-btn" id="gh-copy-scenarios">Копіювати розклад</button>
-                <button class="gh-secondary-btn" id="gh-paste-scenarios">Вставити розклад</button>
+                <button class="gh-secondary-btn" id="gh-copy-scenarios">Копіювати</button>
+                <button class="gh-secondary-btn" id="gh-paste-scenarios">Вставити</button>
+                <button class="gh-secondary-btn" id="gh-clear-scenarios">Очистити</button>
             </div>
             <button class="gh-save-btn" id="gh-save-scenarios">Зберегти розклад</button>
             <div class="gh-hint">
-                Порожні рядки (без часу) ігноруються при збереженні.
-                Копіювання/вставка працює між будь-якими каналами.
+                Рядки без часу ігноруються при збереженні. Один час - спільний для всіх каналів,
+                розклад зберігається окремо в кожен канал. «Очистити» лише очищає форму -
+                щоб застосувати, натисни «Зберегти розклад».
             </div>
         `;
     }
 
-    // Перераховує колонку мікромолей для всіх видимих рядків розкладу за
-    // поточним max_umol каналу. Читає % прямо з полів у DOM (не з cfg), тож
-    // безпечно викликати і по кожному натиску клавіші, і при новому
-    // повідомленні з LogicService/bridge/max_umol.
-    _recalcUmolColumn(channel) {
+    // Перераховує колонки µmol (по каналах і суму) для всіх рядків за % у полях
+    // форми. Читає значення прямо з DOM, тож безпечно викликати на кожен ввід.
+    _recalcUmolColumn() {
         if (!this._modalRoot) return;
-        const maxUmol = this._maxUmolState ? (this._maxUmolState[`max_umol_channel${channel}`] || 0) : 0;
+        const chs = this._channelIndexes();
 
-        this._modalRoot.querySelectorAll('.gh-slot-percent').forEach((input, idx) => {
-            const calcEl = this._modalRoot.querySelector(`#gh-calc-slot-${idx}`);
-            if (!calcEl) return;
-            const percent = input.value === '' ? 0 : clampPercent(input.value);
-            calcEl.textContent = Math.round((percent * maxUmol) / 100);
-        });
+        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
+            let total = 0;
+            let any = false;
+            const mix = [0, 0, 0]; // колір суми: кольори каналів, зважені за µmol
+
+            chs.forEach((ch) => {
+                const input = this._modalRoot.querySelector(`.gh-slot-percent[data-slot="${idx}"][data-ch="${ch}"]`);
+                const calc = this._modalRoot.querySelector(`.gh-slot-calc[data-calc-slot="${idx}"][data-ch="${ch}"]`);
+                if (!input || !calc) return;
+                if (input.value === '') {
+                    calc.textContent = '–';
+                    return;
+                }
+                const umol = this._getMaxUmol(ch) * clampPercent(input.value) / 100;
+                total += umol;
+                any = true;
+                calc.textContent = formatUmol(umol);
+                const rgb = hexToRgb(this._channelColor(ch));
+                for (let k = 0; k < 3; k++) mix[k] += rgb[k] * umol;
+            });
+
+            const totalEl = this._modalRoot.querySelector(`[data-total-slot="${idx}"]`);
+            if (totalEl) {
+                totalEl.textContent = any ? formatUmol(total) : '–';
+                if (any && total > 0) {
+                    const [r, g, b] = mix.map((v) => Math.round(v / total));
+                    totalEl.style.color = `rgb(${r}, ${g}, ${b})`;
+                } else {
+                    totalEl.style.color = '';
+                }
+            }
+        }
     }
 
-    // Універсальні слухачі для розкладу
-    _attachScheduleListeners(zone, channel, isAuto = false) {
+    _attachScheduleListeners(zone, isAuto = false) {
         this._attachTimeInputListeners();
 
+        const chs = this._channelIndexes();
         const saveBtn = this._modalRoot.querySelector('#gh-save-scenarios');
         const copyBtn = this._modalRoot.querySelector('#gh-copy-scenarios');
         const pasteBtn = this._modalRoot.querySelector('#gh-paste-scenarios');
-        
-        // Розділяємо ключі для збереження та буфера обміну
-        const dataKey = 'scenarios';
-        const clipboardKey = SCENARIO_CLIPBOARD_KEY;
+        const clearBtn = this._modalRoot.querySelector('#gh-clear-scenarios');
 
         this._modalRoot.querySelectorAll('.gh-slot-percent').forEach((input) => {
-            input.addEventListener('input', () => this._recalcUmolColumn(channel));
+            input.addEventListener('input', () => this._recalcUmolColumn());
         });
 
         if (saveBtn) {
             saveBtn.addEventListener('click', () => {
-                const scenarios = this._collectScenariosFromForm(); // Завжди працює коректно
-                this._publishSet(zone, channel, { [dataKey]: scenarios });
-
-                const cfg = this._getChannelState(zone, channel);
-                this._channelState[groupName(zone, channel)] = { ...cfg, [dataKey]: scenarios };
-
+                const rows = this._collectScheduleRows();
+                chs.forEach((ch) => {
+                    const scenarios = rows.map((r) => ({ time: r.time, brightness: r.pct[ch - 1] }));
+                    this._publishSet(zone, ch, { scenarios });
+                    const cfg = this._getChannelState(zone, ch);
+                    this._channelState[groupName(zone, ch)] = { ...cfg, scenarios };
+                });
                 this._flashButtonText(saveBtn, 'Збережено ✓', 'Зберегти розклад');
             });
         }
 
         if (copyBtn) {
             copyBtn.addEventListener('click', () => {
-                const scenarios = this._collectScenariosFromForm();
-                localStorage.setItem(clipboardKey, JSON.stringify(scenarios));
-                this._flashButtonText(copyBtn, 'Скопійовано ✓', 'Копіювати розклад');
+                localStorage.setItem(SCENARIO_CLIPBOARD_KEY, JSON.stringify(this._collectScheduleRows()));
+                this._flashButtonText(copyBtn, 'Скопійовано ✓', 'Копіювати');
             });
         }
 
         if (pasteBtn) {
             pasteBtn.addEventListener('click', () => {
-                const raw = localStorage.getItem(clipboardKey);
+                const raw = localStorage.getItem(SCENARIO_CLIPBOARD_KEY);
                 if (!raw) {
-                    this._flashButtonText(pasteBtn, 'Буфер порожній', 'Вставити розклад');
+                    this._flashButtonText(pasteBtn, 'Буфер порожній', 'Вставити');
                     return;
                 }
-                const scenarios = safeParseScenarios(raw);
-                this._populateTimerRows(scenarios); // Універсально заповнює DOM
-                this._recalcUmolColumn(channel);
-                this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити розклад', 2000);
+                this._populateScheduleRows(safeParseScenarios(raw));
+                this._recalcUmolColumn();
+                this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити', 2000);
             });
         }
+
+        if (clearBtn) {
+            clearBtn.addEventListener('click', () => {
+                this._populateScheduleRows([]);
+                this._recalcUmolColumn();
+                this._flashButtonText(clearBtn, 'Очищено ✓ (тисни "Зберегти")', 'Очистити', 2000);
+            });
+        }
+
+        this._recalcUmolColumn();
     }
     // Авторежим - це той самий таймерний розклад (ГГ:ХХ + відсоток, 12
     // слотів, копіювання/вставка, збереження), тільки зверху інший текст і
     // міні-слайдер поточного показника замість опису розкладу. Слайдер -
     // тимчасова заміна реального датчика PPFD: рухаючи його, оператор сам
     // публікує {"lux": ...} у LogicService/bridge/sensor,
-    _renderAutoSection(zone, channel) {
+    _renderAutoSection(zone) {
             const lux = this._lastUmolReading || 0;
             const topHtml = `
                 <div class="gh-section-title">Поточний рівень (тимчасово вручну, потім - датчик)</div>
@@ -1345,9 +1751,9 @@ class GreenhouseZoneCard extends HTMLElement {
             `;
 
             if (!DEBUG_UMOL_SENSOR){
-                return this._renderScheduleSection(zone, channel, true);
+                return this._renderScheduleSection(zone, true);
             }
-            return topHtml + this._renderScheduleSection(zone, channel, true);
+            return topHtml + this._renderScheduleSection(zone, true);
         }
 
     _collectAutoScenariosFromForm() {
@@ -1384,7 +1790,7 @@ class GreenhouseZoneCard extends HTMLElement {
         }
     }
 
-    _attachAutoListeners(zone, channel) {
+    _attachAutoListeners(zone) {
             // --- Слайдер поточного рівня ---
             const sensorRange = this._modalRoot.querySelector('#gh-auto-sensor-range');
             const sensorNumber = this._modalRoot.querySelector('#gh-auto-sensor-number');
@@ -1407,7 +1813,7 @@ class GreenhouseZoneCard extends HTMLElement {
             }
 
             // --- Слухачі авторозкладу ---
-            this._attachScheduleListeners(zone, channel, true);
+            this._attachScheduleListeners(zone, true);
         }
 
     // Оновлення живих значень у відкритій модалці: пілюлі режиму і поля
@@ -1420,26 +1826,21 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     _refreshChannelSpecificValues() {
-        const { zone, activeChannel } = this._modalState;
+        if (!this._modalState || !this._modalRoot) return;
+        const { zone } = this._modalState;
         const zoneMode = this._getChannelState(zone, 1).mode;
-        const cfg = this._getChannelState(zone, activeChannel);
 
         if (zoneMode === 'manual') {
-            const toggleBtn = this._modalRoot.querySelector('#gh-manual-toggle');
-            if (toggleBtn) {
-                const isOn = cfg.state === 'ON';
-                toggleBtn.classList.toggle('on', isOn);
-                toggleBtn.innerText = isOn ? 'Увімкнено' : 'Вимкнено';
-            }
-
-            const range = this._modalRoot.querySelector('#gh-manual-range');
-            const number = this._modalRoot.querySelector('#gh-manual-number');
-            if (range && number && document.activeElement !== range && document.activeElement !== number) {
-                range.value = cfg.brightness;
-                number.value = cfg.brightness;
-            }
+            this._channelIndexes().forEach((ch) => {
+                const cfg = this._getChannelState(zone, ch);
+                const range = this._modalRoot.querySelector(`.gh-m-range[data-ch="${ch}"]`);
+                if (range && document.activeElement !== range) {
+                    range.value = clampPercent(cfg.brightness || 0);
+                }
+            });
+            this._updateManualDisplay();
         } else if (zoneMode === 'timer' || zoneMode === 'auto') {
-            this._recalcUmolColumn(activeChannel);
+            this._recalcUmolColumn();
         }
     }
 

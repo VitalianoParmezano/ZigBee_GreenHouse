@@ -11,17 +11,21 @@ const TOPIC = 'LogicService/bridge/max_umol';
 const TOPIC_SENSOR = 'LogicService/bridge/sensor';
 // CHANNELS_PER_ZONE - та сама константа за змістом, що й у greenhouse-zone-card.js
 // (окремі файли, тож синхронізується вручну). 
-const CHANNELS_PER_ZONE = 1;
+const CHANNELS_PER_ZONE = 3;
 const LUX_TO_UMOL_DIVIDER = 69; // Коефіцієнт для перетворення lux в μmol/m²/s
 const NUMBERS_AFTER_COMMA_SENSOR_VALUE = 2;
 const CHANNELS = Array.from({ length: CHANNELS_PER_ZONE }, (_, i) => i + 1);
 
-function clampUmol(value) {
-    const n = Number(value);
+function clampUmol(value, decimals = 2) {
+    if (typeof value === 'string') {
+        value = value.replace(',', '.'); // замінюємо кому на крапку
+    }
+    const n = parseFloat(value);
     if (Number.isNaN(n)) return 0;
-    return Math.max(0, Math.round(n));
+    
+    const factor = Math.pow(10, decimals);
+    return Math.max(0, Math.round(n * factor) / factor);
 }
-
 class GreenhouseMaxUmolCard extends HTMLElement {
     constructor() {
         super();
@@ -206,7 +210,7 @@ class GreenhouseMaxUmolCard extends HTMLElement {
         ${CHANNELS.map((ch) => `
             <div class="ghmu-row">
                 <div class="ghmu-label">Канал ${ch}</div>
-                <input type="number" min="0" id="ghmu-ch${ch}" value="${this._values[ch]}">
+                <input type="number" step="any" min="0" id="ghmu-ch${ch}" value="${this._values[ch]}">
                 <div class="ghmu-unit">μmol</div>
             </div>
         `).join('')}
