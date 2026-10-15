@@ -6,10 +6,11 @@
 #define PWM_NEG_DUTY_RES     LEDC_TIMER_8_BIT     // 0..255
 #define PWM_NEG_DUTY_PERCENT 50                   // 50% — потрібно для перемикання charge pump!
 
-/* ---------------------- GPIO10: 0-10V вихід (через фільтр) ------------ */
-#define PWM_OUT_GPIO         10
-#define PWM_OUT_MIRROR_GPIO 1
-#define PWM_OUT_FREQ_HZ      300                  // 300 Гц
+// GPIO10 — прямий PWM, дає сигнал на перший світильник
+#define PWM_OUT_GPIO        10
+// GPIO1 — інверсний через GPIO matrix, дає сигнал на декодер
+#define PWM_OUT_MIRROR_GPIO 1                     // 
+#define PWM_OUT_FREQ_HZ     300                  // 300 Гц
 #define PWM_OUT_DUTY_RES     LEDC_TIMER_10_BIT    // 0-1023
 
 #define LEDC_TIMER_NEG       LEDC_TIMER_0

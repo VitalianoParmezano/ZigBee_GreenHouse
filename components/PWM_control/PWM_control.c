@@ -53,7 +53,9 @@ void pwm_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&channel_out));
 
-    // Один LEDC-канал: GPIO10 прямий, GPIO1 інвертований через GPIO matrix.
+    // Цей конфіг дозволяє керувати обома GPIO одночасно, використовуючи один канал PWM.
+    // GPIO1 підключається до сигналу LEDC через GPIO matrix, з інверсією.
+    // GPIO10 отримує прямий PWM сигнал, а GPIO1 отримує інверсний сигнал через матрицю.
     ESP_ERROR_CHECK(ledc_set_pin(PWM_OUT_MIRROR_GPIO, LEDC_MODE, LEDC_CHANNEL_OUT));
     esp_rom_gpio_connect_out_signal(PWM_OUT_MIRROR_GPIO,
                                     LEDC_LS_SIG_OUT0_IDX + LEDC_CHANNEL_OUT,
