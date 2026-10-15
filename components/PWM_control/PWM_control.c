@@ -3,6 +3,8 @@
 #include <stdio.h>
 #include "driver/ledc.h"
 #include "esp_log.h"
+#include "esp_rom_gpio.h"
+#include "soc/gpio_sig_map.h"
 
 static const char *TAG = "PWM control";
 
@@ -51,10 +53,16 @@ void pwm_init(void)
     };
     ESP_ERROR_CHECK(ledc_channel_config(&channel_out));
 
+    // Один LEDC-канал: GPIO10 прямий, GPIO1 інвертований через GPIO matrix.
+    ESP_ERROR_CHECK(ledc_set_pin(PWM_OUT_MIRROR_GPIO, LEDC_MODE, LEDC_CHANNEL_OUT));
+    esp_rom_gpio_connect_out_signal(PWM_OUT_MIRROR_GPIO,
+                                    LEDC_LS_SIG_OUT0_IDX + LEDC_CHANNEL_OUT,
+                                    true, false);
+
     ESP_LOGI(TAG, "PWM Ініціалізовано" );
 }
 
-/* Оновлює duty на GPIO10 відповідно до level (0..100) */
+/* Оновлює спільний duty на GPIO10 і GPIO1 відповідно до level (0..100) */
 void pwm_out_set_percent(uint8_t channel, uint8_t level)
 {
 

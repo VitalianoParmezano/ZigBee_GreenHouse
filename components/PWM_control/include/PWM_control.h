@@ -8,6 +8,7 @@
 
 /* ---------------------- GPIO10: 0-10V вихід (через фільтр) ------------ */
 #define PWM_OUT_GPIO         10
+#define PWM_OUT_MIRROR_GPIO 1
 #define PWM_OUT_FREQ_HZ      300                  // 300 Гц
 #define PWM_OUT_DUTY_RES     LEDC_TIMER_10_BIT    // 0-1023
 
