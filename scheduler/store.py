@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS channel_config (
     zone INTEGER NOT NULL,
     channel INTEGER NOT NULL,
     mode TEXT NOT NULL DEFAULT 'manual',
+    auto INTEGER NOT NULL DEFAULT 0,
     scenarios TEXT NOT NULL DEFAULT '[]',
     brightness INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (zone, channel)
@@ -37,7 +38,7 @@ CREATE TABLE IF NOT EXISTS channel_config (
 """
 
 
-VALID_FIELDS = {"mode", "scenarios", "brightness"}
+VALID_FIELDS = {"mode", "auto", "scenarios", "brightness"}
 
 _SCHEMA_LAMPS = """
 CREATE TABLE IF NOT EXISTS lamp_config (
@@ -69,21 +70,22 @@ class ChannelStore:
     def get(self, zone: int, channel: int) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT mode, scenarios, brightness "
+                "SELECT mode, auto, scenarios, brightness "
                 "FROM channel_config WHERE zone=? AND channel=?",
                 (zone, channel),
             ).fetchone()
         if row is None:
             return {
-                "mode": "manual", "scenarios": [], "brightness": 0,
+                "mode": "manual", "auto": False, "scenarios": [], "brightness": 0,
             }
-        mode, scenarios_raw, brightness = row
+        mode, auto, scenarios_raw, brightness = row
         try:
             scenarios = json.loads(scenarios_raw)
         except json.JSONDecodeError:
             scenarios = []
         return {
             "mode": mode,
+            "auto": bool(auto),
             "scenarios": scenarios,
             "brightness": brightness,
         }
@@ -100,16 +102,19 @@ class ChannelStore:
             self._conn.execute(
                 """
                 INSERT INTO channel_config
-                    (zone, channel, mode, scenarios, brightness)
-                VALUES (?, ?, ?, ?, ?)
+                    (zone, channel, mode, auto, scenarios, brightness)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(zone, channel) DO UPDATE SET
                     mode = excluded.mode,
+                    auto = excluded.auto,
                     scenarios = excluded.scenarios,
                     brightness = excluded.brightness
                 """,
                 (
-                    zone, channel,
+                    zone,
+                    channel,
                     current["mode"],
+                    1 if current.get("auto") else 0,     # ← ОСЬ ЦЬОГО НЕ ХВАТАЛО
                     json.dumps(current["scenarios"]),
                     int(current["brightness"]),
                 ),

@@ -50,8 +50,8 @@ from .store import ChannelStore
 log = logging.getLogger("mqtt_state")
 
 _GROUP_RE = re.compile(r"^Zone_(\d+)_Channel_(\d+)$")
-_ALL_FIELDS = ("mode", "scenarios", "offline_brightness", "brightness", "state")
-
+_ALL_FIELDS = ("mode", "auto", "scenarios", "offline_brightness",
+               "brightness", "auto_delta", "state")
 # Стандартні коди CONNACK з MQTT 3.1.1 - щоб не гадати, чому rc != 0
 _CONNACK_REASONS = {
     0: "з'єднання успішне",
@@ -101,11 +101,8 @@ class MqttState:
 
     def __init__(self, store: Optional[ChannelStore] = None) -> None:
         self.store = store or ChannelStore()
-        # Останній відомий показник датчика (μmol/m²/s) - для авторежиму.
-        # 0.0 за замовчуванням, поки не прийшло жодне повідомлення в
-        # bridge/sensor (консервативний дефолт: без даних датчика авторежим
-        # видає повний базовий відсоток з розкладу, а не занижений).
         self.sensor_lux: float = 0.0
+        self._last_auto_delta: dict[tuple[int, int], int] = {}
 
         self._client = mqtt.Client(client_id="LogicService", protocol=mqtt.MQTTv311)
         if settings.mqtt_user:
@@ -171,7 +168,7 @@ class MqttState:
         for zone in range(1, settings.zones + 1):
             for channel in range(1, settings.channels_per_zone + 1):
                 group = group_name(zone, channel)
-                self._broadcast(group, self.store.get(zone, channel))
+                self._broadcast(group)
                 count += 1
 
         # {"max_umol_channel1": 10.0, "max_umol_channel2": 150.0, ...} - той самий
@@ -264,13 +261,22 @@ class MqttState:
         log.info("SET %s <- %s => збережено %s", group, payload, updated)
 
         # brightness - СПІЛЬНЕ поле для manual і timer. Явна команда з /set -
-        # це завжди миттєве керування (не чекаємо наступного тіку), незалежно
-        # від того, в якому mode зараз канал: timer на наступному тіку просто
-        # порахує й перезапише це значення знову, якщо треба.
+        # це завжди миттєве керування, АЛЕ якщо в каналу auto=true, то
+        # brightness сприймається як "бажаний рівень на рослинах", і його
+        # треба прогнати через корекцію датчиком. Тому не публікуємо одразу -
+        # це зробить наступний тік. Інакше буде ривок: зараз 60%, за 30с - 38%.
         if "brightness" in payload:
-            self._publish_zigbee_brightness(zone, channel, int(payload["brightness"]))
+            cfg = self.store.get(zone, channel)
+            if not cfg.get("auto"):
+                self._publish_zigbee_brightness(zone, channel, int(payload["brightness"]))
+            else:
+                log.debug(
+                    "SET %s: brightness=%s збережено, але auto=true -> "
+                    "публікацію зробить наступний тік (з корекцією за датчиком)",
+                    group, payload["brightness"],
+                )
 
-        self._broadcast(group, updated)
+        self._broadcast(group)
 
     def _handle_get(self, group: str, payload_bytes: bytes) -> None:
         parsed = _parse_group_name(group)
@@ -280,35 +286,62 @@ class MqttState:
         zone, channel = parsed
 
         requested = _parse_requested_fields(payload_bytes)
-        full = _with_derived_state(self.store.get(zone, channel))
+        full = self._build_full_state(zone, channel)
         response = full if requested is None else {k: full[k] for k in requested if k in full}
 
         topic = f"{self.CONTROL_PREFIX}/{group}/get"
         self._client.publish(topic, json.dumps(response))
         log.debug("GET %s (поля=%s) -> %s", group, requested or "усі", response)
 
-    def _broadcast(self, group: str, cfg: dict[str, Any]) -> None:
+    def _broadcast(self, group: str) -> None:
         """Retained-повідомлення повного стану в базовий топік (без /set, /get) -
-        зручно для будь-кого, хто просто хоче спостерігати за змінами."""
-        full = _with_derived_state(cfg)
+        зручно для будь-кого, хто просто хоче спостерігати за змінами.
+        Використовує той самий _build_full_state, що й /get - щоб структура
+        була ІДЕНТИЧНА в обох джерелах."""
+        parsed = _parse_group_name(group)
+        if parsed is None:
+            log.warning("BROADCAST: не вдалось розпарсити зону/канал з '%s'", group)
+            return
+        zone, channel = parsed
+        full = self._build_full_state(zone, channel)
         self._client.publish(f"{self.CONTROL_PREFIX}/{group}", json.dumps(full), retain=True)
 
+    def _build_full_state(self, zone: int, channel: int) -> dict[str, Any]:
+        """Повний стан каналу для віддачі назовні: усе з БД + похідні поля
+        (state, auto_delta), яких у БД немає. Саме тут _ALL_FIELDS стає
+        джерелом правди: якщо поле є в _ALL_FIELDS, воно буде у відповіді."""
+        cfg = self.store.get(zone, channel)
+        full = dict(cfg)
+        full["state"] = "ON" if cfg.get("brightness", 0) > 0 else "OFF"
+        full["auto_delta"] = self._last_auto_delta.get((zone, channel), 0)
+
+        # Гарантія: усі поля з _ALL_FIELDS присутні (відсутні -> None).
+        for field in _ALL_FIELDS:
+            full.setdefault(field, None)
+
+        return full
     # ------------------------------------------------------------------ #
-    def apply_timer_brightness(self, zone: int, channel: int, target: int) -> None:
-        """Викликається з тікового циклу сервісу, коли timer-режим порахував
-        нове значення. Пише в ТЕ САМЕ поле 'brightness', що й ручне /set -
-        GET завжди повертає актуальне значення незалежно від джерела."""
+    def apply_timer_brightness(self, zone: int, channel: int, target: int, *, auto: bool = False, 
+                            auto_delta: int = 0,) -> None:
+        """Викликається з тікового циклу сервісу. Пише в ТЕ САМЕ поле
+        'brightness', що й ручне /set - GET завжди повертає актуальне
+        значення незалежно від джерела.
+
+        auto / auto_delta - миттєва діагностика поточного тіку:
+        auto_delta = скільки відсотків зрізав авторежим (base - target).
+        У БД auto_delta НЕ зберігається, тільки в пам'яті + broadcast."""
         group = group_name(zone, channel)
         updated = self.store.update(zone, channel, {"brightness": target})
+        self._last_auto_delta[(zone, channel)] = int(auto_delta)
+
         self._publish_zigbee_brightness(zone, channel, target)
-        self._broadcast(group, updated)
+        self._broadcast(group)
 
     def get_channel_config(self, zone: int, channel: int) -> dict[str, Any]:
         return self.store.get(zone, channel)
-    # ------------------------------------------------------------------ #
+# ------------------------------------------------------------------ #
 
     def _handle_max_umol_update(self, payload_bytes: bytes) -> None:
-        # КРОК 1: Перетворюємо байти, що прийшли з MQTT, у зрозумілий Python-словник (dict)
         try:
             data = json.loads(payload_bytes.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -345,7 +378,7 @@ class MqttState:
         # Рапорт, що все успішно збережено
         log.info("bridge/max_umol: успішно оновлено максимальні μmol: %s", data)
 
-    # ------------------------------------------------------------------ #
+# ------------------------------------------------------------------ #
     def _publish_zigbee_brightness(self, zone: int, channel: int, brightness_pct: int) -> None:
         """Єдине, що йде в реальний zigbee2mqtt - ESP розуміє тільки це.
         Шлемо і `state`, і `brightness` явно - не покладаємось на те, що

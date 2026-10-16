@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from ast import Store
 import logging
+from statistics import mode
 import time
 import scheduler.store as store
 from datetime import datetime
@@ -27,7 +28,12 @@ from pathlib import Path
 
 from .config import PROJECT_ROOT, settings
 from .mqtt_state import MqttState
-from .schedule_logic import next_change, parse_scenarios, resolve_auto_brightness, resolve_target_brightness
+from .schedule_logic import (
+    apply_sensor_correction,
+    next_change,
+    parse_scenarios,
+    resolve_target_brightness,
+)
 
 log = logging.getLogger("service")
 
@@ -136,63 +142,38 @@ class SchedulerService:
         label = f"Zone {zone} / Channel {channel}"
         cfg = self.state.get_channel_config(zone, channel)
         mode = cfg["mode"]
+        auto = bool(cfg.get("auto", False))
 
+        # --- 1. Базовий target залежно від mode ---
         if mode == "manual":
-            target = cfg.get("brightness")
-            if target is None:
-                log.debug("%s: manual без збереженого значення -> 0%%", label)
-                target = 0
-            log.debug("%s: manual -> %s%%", label, target)
-            self.state.apply_timer_brightness(zone, channel, target)
-            return "sent"
-
-        if mode == "auto":
+            base = cfg.get("brightness") or 0
+            source = "manual"
+        elif mode == "timer":
             points = parse_scenarios(cfg["scenarios"])
-            sensor_lux = self.state.get_sensor_lux()
-
-            target = resolve_auto_brightness(points, now_minutes, sensor_lux, max_umol) if points else None
-            if target is None:
-                log.debug("%s: auto без розкладу/результату -> 0%%", label)
-                target = 0
-
-# Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-# У випадку з приєднанням нових пристроїв - вони не отримають команду
-            key = (zone, channel)
-            # if self._last_sent.get(key) == target:
-            #     log.debug("%s: без змін (%s%%, датчик=%.1f μmol)", label, target, sensor_lux)
-            #     return "unchanged"
-
-            log.info(
-                "%s: auto -> %s%% (датчик=%.1f μmol, max_umol=%.1f)",
-                label, target, sensor_lux, max_umol
-            )
-            self.state.apply_timer_brightness(zone, channel, target)
-            self._last_sent[key] = target
-            return "sent"
-
-        if mode != "timer":
+            base = resolve_target_brightness(points, now_minutes) if points else 0
+            source = "timer"
+        else:
             log.debug("%s: невідомий mode=%r -> 0%%", label, mode)
-            self.state.apply_timer_brightness(zone, channel, 0)
+            self.state.apply_timer_brightness(zone, channel, 0, auto=False, auto_delta=0)
             return "sent"
 
-        points = parse_scenarios(cfg["scenarios"])
-        target = resolve_target_brightness(points, now_minutes) if points else None
-        if target is None:
-            log.debug("%s: timer без розкладу/результату -> 0%%", label)
-            target = 0
+        # --- 2. Опційна корекція за датчиком ---
+        if auto:
+            sensor_lux = self.state.get_sensor_lux()
+            target = apply_sensor_correction(base, sensor_lux, max_umol)
+            auto_delta = base - target
+            log.info(
+                "%s: %s+auto -> %s%% (base=%s%%, auto_delta=%s%%, датчик=%.1f lux, max_umol=%.1f)",
+                label, source, target, base, auto_delta, sensor_lux, max_umol,
+            )
+        else:
+            target = base
+            auto_delta = 0
+            log.info("%s: %s -> %s%%", label, source, target)
 
-# Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-# У випадку з приєднанням нових пристроїв - вони не отримають команду
-        key = (zone, channel)
-        # if self._last_sent.get(key) == target:
-        #     log.debug("%s: без змін (%s%%)", label, target)
-        #     return "unchanged"
-
-        nxt = next_change(points, now_minutes) if points else None
-        log.info(
-            "%s: timer -> %s%% (наступна зміна о %s)",
-            label, target, nxt.time_str if nxt else "-",
+        self.state.apply_timer_brightness(
+            zone, channel, target,
+            auto=auto, auto_delta=auto_delta,
         )
-        self.state.apply_timer_brightness(zone, channel, target)
-        self._last_sent[key] = target
+        self._last_sent[(zone, channel)] = target
         return "sent"

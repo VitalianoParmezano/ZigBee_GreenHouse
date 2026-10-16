@@ -109,46 +109,32 @@ def umol_to_percent(umol: float, umol_multiplier: float) -> float:
     return umol / umol_multiplier
 
 
-def resolve_auto_brightness(
-    points: list[ScenarioPoint],
-    now_minutes: int,
+def apply_sensor_correction(
+    base_percent: int,
     sensor_lux: float,
     max_umol: float,
-) -> Optional[int]:
+) -> int:
     """
-    Авторежим: базовий відсоток береться з розкладу (той самий алгоритм,
-    що й у таймері - resolve_target_brightness), переводиться в μmol за
-    калібрувальним множником, і з нього віднімається те, що вже реально
-    показує датчик (сонце, сусідні лампи тощо) - різниця конвертується
-    назад у відсоток і є тим, що треба доввімкнути штучним світлом.
+    Універсальна корекція яскравості за датчиком (Daylight Harvesting).
 
-    Приклад: розклад каже "50%" о цій годині, множник 25.0 -> цільові
-    50 * 25 = 1250 μmol. Датчик показує 300 μmol (частково є природне
-    світло) -> треба ще (1250 - 300) / 25 = 38% штучного світла, а не
-    повні 50%. Якщо датчик уже показує 1250+ μmol - результат обрізається
-    до 0 (світла й так достатньо, доввімкнювати нічого не треба).
+    base_percent - цільовий відсоток, який ми хочемо отримати на рослинах
+                   (з розкладу timer АБО з ручного значення manual).
+    sensor_lux   - поточний показник датчика (lux).
+    max_umol     - максимум лампи каналу (μmol/m²/s).
 
-    Повертає None, якщо розклад порожній (як і resolve_target_brightness).
+    Повертає відсоток, який треба виставити на лампі, щоб
+    base_percent на рослинах був досягнутий з урахуванням уже
+    наявного світла (сонце тощо).
     """
+    if max_umol <= 0:
+        return base_percent  # немає калібрування - не можемо коригувати
 
-    sensor_umol = sensor_lux / 69  # Переводимо lux -> μmol/m²/s (PPFD) за емпіричною формулою
-
-    user_percent = resolve_target_brightness(points, now_minutes)
-    if user_percent is None:
-        return None
-
-    
-
-    target_umol = user_percent * max_umol / 100  # percent * umol_multiplier
+    sensor_umol = sensor_lux / 69  # lux -> μmol/m²/s (емпірична формула)
+    target_umol = base_percent * max_umol / 100
     diff_umol = target_umol - sensor_umol
 
     if diff_umol <= 0:
         return 0
 
-    target_percent = diff_umol / max_umol * 100  # μmol -> percent
-
-    print(f"DEBUG: now={now_minutes} min, user_percent={user_percent}, sensor_lux={sensor_lux:.1f}, "
-          f"sensor_umol={sensor_umol:.1f}, target_umol={target_umol:.1f}, diff_umol={diff_umol:.1f}, target_percent={target_percent:.1f}")
-
-    return int(round(target_percent))
+    return int(round(diff_umol / max_umol * 100))
 
