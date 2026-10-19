@@ -267,8 +267,8 @@ class MqttState:
         # це завжди миттєве керування (не чекаємо наступного тіку), незалежно
         # від того, в якому mode зараз канал: timer на наступному тіку просто
         # порахує й перезапише це значення знову, якщо треба.
-        if "brightness" in payload:
-            self._publish_zigbee_brightness(zone, channel, int(payload["brightness"]))
+        if "brightness_user" in payload:
+            self._publish_zigbee_brightness(zone, channel, int(payload["brightness_user"]))
 
         self._broadcast(group, updated)
 

@@ -138,7 +138,7 @@ class SchedulerService:
         mode = cfg["mode"]
 
         if mode == "manual":
-            target = cfg.get("brightness")
+            target = cfg.get("brightness_user")
             if target is None:
                 log.debug("%s: manual без збереженого значення -> 0%%", label)
                 target = 0
