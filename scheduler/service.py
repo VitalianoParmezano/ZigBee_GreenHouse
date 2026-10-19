@@ -146,53 +146,31 @@ class SchedulerService:
             self.state.apply_timer_brightness(zone, channel, target)
             return "sent"
 
-        if mode == "auto":
+        if mode == "timer":
             points = parse_scenarios(cfg["scenarios"])
-            sensor_lux = self.state.get_sensor_lux()
-
-            target = resolve_auto_brightness(points, now_minutes, sensor_lux, max_umol) if points else None
+            target = resolve_target_brightness(points, now_minutes) if points else None
             if target is None:
-                log.debug("%s: auto без розкладу/результату -> 0%%", label)
+                log.debug("%s: timer без розкладу/результату -> 0%%", label)
                 target = 0
 
-# Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-# У випадку з приєднанням нових пристроїв - вони не отримають команду
+            # Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
+            # У випадку з приєднанням нових пристроїв - вони не отримають команду
             key = (zone, channel)
             # if self._last_sent.get(key) == target:
-            #     log.debug("%s: без змін (%s%%, датчик=%.1f μmol)", label, target, sensor_lux)
+            #     log.debug("%s: без змін (%s%%)", label, target)
             #     return "unchanged"
 
+            nxt = next_change(points, now_minutes) if points else None
             log.info(
-                "%s: auto -> %s%% (датчик=%.1f μmol, max_umol=%.1f)",
-                label, target, sensor_lux, max_umol
+                "%s: timer -> %s%% (наступна зміна о %s)",
+                label, target, nxt.time_str if nxt else "-",
             )
             self.state.apply_timer_brightness(zone, channel, target)
             self._last_sent[key] = target
             return "sent"
 
-        if mode != "timer":
+        if mode != "timer" and mode != "manual":
             log.debug("%s: невідомий mode=%r -> 0%%", label, mode)
             self.state.apply_timer_brightness(zone, channel, 0)
             return "sent"
 
-        points = parse_scenarios(cfg["scenarios"])
-        target = resolve_target_brightness(points, now_minutes) if points else None
-        if target is None:
-            log.debug("%s: timer без розкладу/результату -> 0%%", label)
-            target = 0
-
-# Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-# У випадку з приєднанням нових пристроїв - вони не отримають команду
-        key = (zone, channel)
-        # if self._last_sent.get(key) == target:
-        #     log.debug("%s: без змін (%s%%)", label, target)
-        #     return "unchanged"
-
-        nxt = next_change(points, now_minutes) if points else None
-        log.info(
-            "%s: timer -> %s%% (наступна зміна о %s)",
-            label, target, nxt.time_str if nxt else "-",
-        )
-        self.state.apply_timer_brightness(zone, channel, target)
-        self._last_sent[key] = target
-        return "sent"
