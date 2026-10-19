@@ -13,6 +13,7 @@ device_time, або (б) виконує сервер, якщо рішено тр
 from __future__ import annotations
 
 from dataclasses import dataclass
+from logging import log
 from typing import Any, Optional
 from scheduler.store import ChannelStore
 
@@ -55,7 +56,7 @@ def parse_scenarios(raw: Optional[list[dict[str, Any]]]) -> list[ScenarioPoint]:
     return sorted(points, key=lambda p: p.minutes)
 
 
-def resolve_target_brightness(points: list[ScenarioPoint], now_minutes: int) -> Optional[int]:
+def resolve_scenario_target_brightness(points: list[ScenarioPoint], now_minutes: int) -> Optional[int]:
     """
     Знаходить яскравість, яка має діяти ЗАРАЗ.
 
@@ -109,9 +110,8 @@ def umol_to_percent(umol: float, umol_multiplier: float) -> float:
     return umol / umol_multiplier
 
 
-def resolve_auto_brightness(
-    points: list[ScenarioPoint],
-    now_minutes: int,
+def auto_correction_resolve(
+    percent: int,
     sensor_lux: float,
     max_umol: float,
 ) -> Optional[int]:
@@ -133,22 +133,16 @@ def resolve_auto_brightness(
 
     sensor_umol = sensor_lux / 69  # Переводимо lux -> μmol/m²/s (PPFD) за емпіричною формулою
 
-    user_percent = resolve_target_brightness(points, now_minutes)
-    if user_percent is None:
-        return None
-
+    user_percent = max(0, min(100, percent))  # обрізаємо в межі 0..100, якщо хтось там на фронті щось криво ввів
     
-
     target_umol = user_percent * max_umol / 100  # percent * umol_multiplier
-    diff_umol = target_umol - sensor_umol
+
+    diff_umol = target_umol - sensor_umol   # diff 
 
     if diff_umol <= 0:
         return 0
 
     target_percent = diff_umol / max_umol * 100  # μmol -> percent
-
-    print(f"DEBUG: now={now_minutes} min, user_percent={user_percent}, sensor_lux={sensor_lux:.1f}, "
-          f"sensor_umol={sensor_umol:.1f}, target_umol={target_umol:.1f}, diff_umol={diff_umol:.1f}, target_percent={target_percent:.1f}")
 
     return int(round(target_percent))
 

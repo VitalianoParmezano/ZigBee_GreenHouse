@@ -294,7 +294,7 @@ class MqttState:
         self._client.publish(f"{self.CONTROL_PREFIX}/{group}", json.dumps(full), retain=True)
 
     # ------------------------------------------------------------------ #
-    def apply_timer_brightness(self, zone: int, channel: int, target: int) -> None:
+    def apply_brightness(self, zone: int, channel: int, target: int) -> None:
         """Викликається з тікового циклу сервісу, коли timer-режим порахував
         нове значення. Пише в ТЕ САМЕ поле 'brightness', що й ручне /set -
         GET завжди повертає актуальне значення незалежно від джерела."""

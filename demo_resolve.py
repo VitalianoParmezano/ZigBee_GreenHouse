@@ -12,7 +12,7 @@
 import argparse
 from datetime import datetime
 
-from scheduler.schedule_logic import next_change, parse_scenarios, resolve_target_brightness
+from scheduler.schedule_logic import next_change, parse_scenarios, resolve_scenario_target_brightness
 
 # Той самий формат, що записує _attachTimerListeners у greenhouse-zone-card.js
 SAMPLE_SCENARIOS = [
@@ -34,7 +34,7 @@ def _timeline(points, now_minutes: int, width: int = 48) -> str:
     bar = []
     for i in range(width):
         slot_minutes = i * step
-        b = resolve_target_brightness(points, slot_minutes) or 0
+        b = resolve_scenario_target_brightness(points, slot_minutes) or 0
         # 4 градації щільності залежно від яскравості
         char = " " if b == 0 else ("░" if b < 34 else ("▒" if b < 67 else "█"))
         bar.append(char)
@@ -58,7 +58,7 @@ def main() -> None:
         print(f"  {p.time_str} -> {p.brightness}%")
     print()
 
-    target = resolve_target_brightness(points, now_minutes)
+    target = resolve_scenario_target_brightness(points, now_minutes)
     nxt = next_change(points, now_minutes)
     now_str = f"{now_minutes // 60:02d}:{now_minutes % 60:02d}"
     print(f"Зараз {now_str} -> яскравість {target}% (наступна зміна о {nxt.time_str if nxt else '-'})")
@@ -69,7 +69,7 @@ def main() -> None:
         print("\nПовна таблиця (крок 30 хв):")
         for m in range(0, 1440, 30):
             t = f"{m // 60:02d}:{m % 60:02d}"
-            b = resolve_target_brightness(points, m)
+            b = resolve_scenario_target_brightness(points, m)
             print(f"  {t}  =>  {b}%")
 
 

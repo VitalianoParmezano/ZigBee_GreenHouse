@@ -27,7 +27,7 @@ from pathlib import Path
 
 from .config import PROJECT_ROOT, settings
 from .mqtt_state import MqttState
-from .schedule_logic import next_change, parse_scenarios, resolve_auto_brightness, resolve_target_brightness
+from .schedule_logic import next_change, parse_scenarios, auto_correction_resolve, resolve_scenario_target_brightness
 
 log = logging.getLogger("service")
 
@@ -136,6 +136,8 @@ class SchedulerService:
         label = f"Zone {zone} / Channel {channel}"
         cfg = self.state.get_channel_config(zone, channel)
         mode = cfg["mode"]
+        auto = cfg["auto"]
+        target_sending_brightness = 0 # Цільова яскравість, яку ми будемо відправляти на лампу після обробки режимів
 
         if mode == "manual":
             target = cfg.get("brightness_user")
@@ -143,34 +145,35 @@ class SchedulerService:
                 log.debug("%s: manual без збереженого значення -> 0%%", label)
                 target = 0
             log.debug("%s: manual -> %s%%", label, target)
-            self.state.apply_timer_brightness(zone, channel, target)
-            return "sent"
+            target_sending_brightness = target
 
         if mode == "timer":
             points = parse_scenarios(cfg["scenarios"])
-            target = resolve_target_brightness(points, now_minutes) if points else None
+            target = resolve_scenario_target_brightness(points, now_minutes) if points else None
             if target is None:
                 log.debug("%s: timer без розкладу/результату -> 0%%", label)
                 target = 0
-
-            # Наступний закоментований код - оптимізація, якщо немає змін тоді і не надсилати команду.
-            # У випадку з приєднанням нових пристроїв - вони не отримають команду
-            key = (zone, channel)
-            # if self._last_sent.get(key) == target:
-            #     log.debug("%s: без змін (%s%%)", label, target)
-            #     return "unchanged"
 
             nxt = next_change(points, now_minutes) if points else None
             log.info(
                 "%s: timer -> %s%% (наступна зміна о %s)",
                 label, target, nxt.time_str if nxt else "-",
             )
-            self.state.apply_timer_brightness(zone, channel, target)
-            self._last_sent[key] = target
-            return "sent"
+            target_sending_brightness = target
 
         if mode != "timer" and mode != "manual":
-            log.debug("%s: невідомий mode=%r -> 0%%", label, mode)
-            self.state.apply_timer_brightness(zone, channel, 0)
-            return "sent"
+            log.warning("%s: невідомий mode=%r -> 0%%, скидаю в 0", label, mode)
+            self.state.apply_brightness(zone, channel, 0)
+            return "skipped"
+
+        if auto:
+            log.debug("Auto увімкнено для цього каналу. %s", label)
+            lux_sensor_value = self.state.get_sensor_lux()
+            target_sending_brightness = auto_correction_resolve(target_sending_brightness, lux_sensor_value, max_umol)
+
+        
+
+        # Частина надсилання команди на лампу після обробки режимів
+        self.state.apply_brightness(zone, channel, target_sending_brightness)
+        return "sent"
 
