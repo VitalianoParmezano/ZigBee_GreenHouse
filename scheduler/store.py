@@ -32,12 +32,13 @@ CREATE TABLE IF NOT EXISTS channel_config (
     mode TEXT NOT NULL DEFAULT 'manual',
     scenarios TEXT NOT NULL DEFAULT '[]',
     brightness INTEGER NOT NULL DEFAULT 0,
+    auto INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (zone, channel)
 );
 """
 
 
-VALID_FIELDS = {"mode", "scenarios", "brightness"}
+VALID_FIELDS = {"mode", "scenarios", "brightness", "auto"}
 
 _SCHEMA_LAMPS = """
 CREATE TABLE IF NOT EXISTS lamp_config (
@@ -69,15 +70,15 @@ class ChannelStore:
     def get(self, zone: int, channel: int) -> dict[str, Any]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT mode, scenarios, brightness "
+                "SELECT mode, scenarios, brightness, auto "
                 "FROM channel_config WHERE zone=? AND channel=?",
                 (zone, channel),
             ).fetchone()
         if row is None:
             return {
-                "mode": "manual", "scenarios": [], "brightness": 0,
+                "mode": "manual", "scenarios": [], "brightness": 0, "auto": 0,
             }
-        mode, scenarios_raw, brightness = row
+        mode, scenarios_raw, brightness, auto = row
         try:
             scenarios = json.loads(scenarios_raw)
         except json.JSONDecodeError:
@@ -86,6 +87,7 @@ class ChannelStore:
             "mode": mode,
             "scenarios": scenarios,
             "brightness": brightness,
+            "auto": auto, 
         }
 
     def update(self, zone: int, channel: int, updates: dict[str, Any]) -> dict[str, Any]:
@@ -100,18 +102,20 @@ class ChannelStore:
             self._conn.execute(
                 """
                 INSERT INTO channel_config
-                    (zone, channel, mode, scenarios, brightness)
-                VALUES (?, ?, ?, ?, ?)
+                    (zone, channel, mode, scenarios, brightness, auto)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(zone, channel) DO UPDATE SET
                     mode = excluded.mode,
                     scenarios = excluded.scenarios,
-                    brightness = excluded.brightness
+                    brightness = excluded.brightness,
+                    auto = excluded.auto
                 """,
                 (
                     zone, channel,
                     current["mode"],
                     json.dumps(current["scenarios"]),
                     int(current["brightness"]),
+                    int(current["auto"]),
                 ),
             )
             self._conn.commit()
