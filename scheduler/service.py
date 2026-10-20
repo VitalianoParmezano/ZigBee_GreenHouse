@@ -21,6 +21,7 @@ from ast import Store
 import logging
 import time
 import scheduler.store as store
+import threading
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -39,6 +40,8 @@ class SchedulerService:
         # (zone, channel) -> останнє застосоване timer-ом значення, щоб не
         # спамити мережу однаковою командою щотіку, поки нічого не змінилось.
         self._last_sent: dict[tuple[int, int], int] = {}
+        self.state.on_set = self.process_zone      # /set буде кликати цей метод
+        self._lock = threading.Lock()              # тік і MQTT-потік не повинні рахувати одночасно 
 
     def start(self) -> None:
         level = getattr(logging, settings.log_level, logging.INFO)
@@ -101,44 +104,8 @@ class SchedulerService:
 
 
     def _tick(self) -> None:
-        now = datetime.now()
-        now_minutes = now.hour * 60 + now.minute
-        log.debug("=== Тік о %02d:%02d ===", now.hour, now.minute)
-
-        max_umol = self.state.store.get_all_lamp_max_umols()
-        lux = self.state.get_sensor_lux()          # один раз на тік, а не на кожен канал
-        pw = settings.power
-        channels = range(1, settings.channels_per_zone + 1)
-
-        commands_sent = 0
-        zones_limited = 0
-
         for zone in range(1, settings.zones + 1):
-            # 1) цілі всіх каналів зони (таймер/ручний + авто)
-            targets = {
-                ch: self._resolve_channel(zone, ch, now_minutes, max_umol.get(ch, 0.0), lux)
-                for ch in channels
-            }
-
-            # 2) PBD на рівні зони
-            if pw.enabled:
-                limited = pbd_limit(targets, pw.channel_watts, pw.max_watts, pw.yield_channel)
-                if limited != targets:
-                    zones_limited += 1
-                    log.info("Zone %s: PBD %s -> %s", zone, targets, limited)
-                targets = limited
-
-            # 3) відправка пачкою
-            for ch, value in targets.items():
-                self.state.apply_brightness(zone, ch, value)
-                commands_sent += 1
-
-        log.log(
-            logging.INFO if zones_limited else logging.DEBUG,
-            "Тік завершено: %s команд(и), PBD спрацював у %s зон(ах)",
-            commands_sent, zones_limited,
-        )
-
+            self.process_zone(zone)
 
     def _resolve_channel(self, zone: int, channel: int, now_minutes: int,
                         max_umol: float, lux: float) -> int:
@@ -171,49 +138,21 @@ class SchedulerService:
 
         return int(target)
 
-    # def _process_channel(self, zone: int, channel: int, now_minutes: int, max_umol: float) -> str:
-    #     """Повертає 'sent' / 'unchanged' / 'skipped' - для підрахунку в _tick()."""
-    #     label = f"Zone {zone} / Channel {channel}"
-    #     cfg = self.state.get_channel_config(zone, channel)
-    #     mode = cfg["mode"]
-    #     auto = cfg["auto"]
-    #     target_sending_brightness = 0 # Цільова яскравість, яку ми будемо відправляти на лампу після обробки режимів
 
-    #     if mode == "manual":
-    #         target = cfg.get("brightness_user")
-    #         if target is None:
-    #             log.debug("%s: manual без збереженого значення -> 0%%", label)
-    #             target = 0
-    #         log.debug("%s: manual -> %s%%", label, target)
-    #         target_sending_brightness = target
+    def process_zone(self, zone: int) -> None:
+        with self._lock:
+            now = datetime.now()
+            now_minutes = now.hour * 60 + now.minute
+            max_umol = self.state.store.get_all_lamp_max_umols()
+            lux = self.state.get_sensor_lux()
 
-    #     if mode == "timer":
-    #         points = parse_scenarios(cfg["scenarios"])
-    #         target = resolve_scenario_target_brightness(points, now_minutes) if points else None
-    #         if target is None:
-    #             log.debug("%s: timer без розкладу/результату -> 0%%", label)
-    #             target = 0
+            targets = {
+                ch: self._resolve_channel(zone, ch, now_minutes, max_umol.get(ch, 0.0), lux)
+                for ch in range(1, settings.channels_per_zone + 1)
+            }
+            pw = settings.power
+            if pw.enabled:
+                targets = pbd_limit(targets, pw.channel_watts, pw.max_watts, pw.yield_channel)
 
-    #         nxt = next_change(points, now_minutes) if points else None
-    #         log.info(
-    #             "%s: timer -> %s%% (наступна зміна о %s)",
-    #             label, target, nxt.time_str if nxt else "-",
-    #         )
-    #         target_sending_brightness = target
-
-    #     if mode != "timer" and mode != "manual":
-    #         log.warning("%s: невідомий mode=%r -> 0%%, скидаю в 0", label, mode)
-    #         self.state.apply_brightness(zone, channel, 0)
-    #         return "skipped"
-
-    #     if auto:
-    #         log.debug("Auto увімкнено для цього каналу. %s", label)
-    #         lux_sensor_value = self.state.get_sensor_lux()
-    #         target_sending_brightness = auto_correction_resolve(target_sending_brightness, lux_sensor_value, max_umol)
-
-    #     # Впровадження системи PDB, 
-
-    #     # Частина надсилання команди на лампу після обробки режимів
-    #     self.state.apply_brightness(zone, channel, target_sending_brightness)
-    #     return "sent"
-
+            for ch, value in targets.items():
+                self.state.apply_brightness(zone, ch, value)

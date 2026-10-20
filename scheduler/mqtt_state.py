@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import paho.mqtt.client as mqtt
 
@@ -106,6 +106,7 @@ class MqttState:
         # bridge/sensor (консервативний дефолт: без даних датчика авторежим
         # видає повний базовий відсоток з розкладу, а не занижений).
         self.sensor_lux: float = 0.0
+        self.on_set: Optional[Callable[[int], None]] = None
 
         self._client = mqtt.Client(client_id="LogicService", protocol=mqtt.MQTTv311)
         if settings.mqtt_user:
@@ -267,8 +268,10 @@ class MqttState:
         # це завжди миттєве керування (не чекаємо наступного тіку), незалежно
         # від того, в якому mode зараз канал: timer на наступному тіку просто
         # порахує й перезапише це значення знову, якщо треба.
-        if "brightness_user" in payload:
-            self._publish_zigbee_brightness(zone, channel, int(payload["brightness_user"]))
+        #if "brightness_user" in payload:
+        #    self._publish_zigbee_brightness(zone, channel, int(payload["brightness_user"]))
+        if self.on_set:
+            self.on_set(zone)
 
         self._broadcast(group, updated)
 
