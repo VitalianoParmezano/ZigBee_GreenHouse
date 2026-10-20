@@ -2,14 +2,31 @@
 // звернення до zigbee2mqtt чи HA-сутностей. Обмін даними ведеться через MQTT:
 //
 //   LogicService/Zone_x_Channel_y        <- retained, повний стан каналу
-//                                            (mode, scenarios,
-//                                            brightness, state)
-//   LogicService/Zone_x_Channel_y/set    -> запис (mode/scenarios/brightness)
+//                                            (mode, scenarios, auto,
+//                                            brightness_user, brightness_real)
+//   LogicService/Zone_x_Channel_y/set    -> запис (mode/scenarios/auto/
+//                                            brightness_user)
+//
+// Яскравість - дві окремі сутності:
+//   brightness_user  - що ХОЧЕ користувач (повзунок ручного режиму, результат
+//                      планувальника в таймері). Єдине, що картка пише в /set.
+//   brightness_real  - що РЕАЛЬНО світить лампа після алгоритмів (Авто тощо).
+//                      Лише читається, картка її ніколи не пише.
+//   Різниця (економія Авто) = brightness_user - brightness_real - рахується
+//   в картці. brightness_real читається ЛИШЕ на екрані Авто. Плитка зони й
+//   усі інші екрани працюють тільки з brightness_user; поле state не
+//   використовується (зона увімкнена, якщо brightness_user > 0 хоч на каналі).
+//   Сценарії (scenarios[].brightness) - це план user-яскравості, не чіпаємо.
 //   LogicService/bridge/request          <- online/offline пристрою:
 //                                            {zone, device, status}
 //   LogicService/bridge/sensor           -> глобальний показник датчика
 //                                            (тимчасово - зі слайдера в
 //                                            Авторежимі): {"umol": ...}
+//
+// Авто - не окремий режим, а опція (поле "auto") для будь-якого режиму:
+//   /set {"auto": true|false}         - увімк./вимк. (публікується в кожен канал зони)
+//   стан каналу містить auto; економія Авто = brightness_user - brightness_real
+//   LogicService/bridge/sensor        <- поточне значення датчика {"lux": ...}
 //
 // Режим спільний на всю зону: усі CHANNELS_PER_ZONE каналів синхронізуються
 // одним значенням mode, клік по пілюлі публікує {mode: ...} в /set кожного
@@ -44,6 +61,8 @@ const SMALL_FONT_SIZE = 12;       // дрібний текст: бейдж оф�
 // true = брати максимум µmol з LogicService/bridge/max_umol (якщо там є значення),
 // false = завжди використовувати CHANNEL_MAX_UMOL зверху.
 const MAX_UMOL_FROM_MQTT = true;
+// Підпис одиниці виміру датчика в меню Авто (у payload ключ "lux").
+const SENSOR_UNIT_LABEL = 'lux';
 
 function groupName(zone, channel) {
     return `Zone_${zone}_Channel_${channel}`;
@@ -93,7 +112,17 @@ function hexToRgb(hex) {
     return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [255, 255, 255];
 }
 
-const DEFAULT_CHANNEL_STATE = { mode: 'manual', scenarios: [], brightness: 0, state: 'OFF' };
+const DEFAULT_CHANNEL_STATE = { mode: 'manual', scenarios: [], brightness_user: 0, brightness_real: 0 };
+
+// Що хоче користувач (повзунок/розклад) - єдине, що можна змінювати з картки.
+function userBrightness(cfg) {
+    return Number(cfg && cfg.brightness_user) || 0;
+}
+
+// Що реально світить (після алгоритмів). Використовується ТІЛЬКИ на екрані Авто.
+function realBrightness(cfg) {
+    return Number(cfg && cfg.brightness_real) || 0;
+}
 
 class GreenhouseZoneCard extends HTMLElement {
 
@@ -102,7 +131,7 @@ class GreenhouseZoneCard extends HTMLElement {
         this._mqttSubscribed = false;
         this._unsubMqtt = null;
         this._unsubBridgeRequest = null;
-        // Zone_x_Channel_y -> { mode, scenarios, brightness, state }, наповнюється
+        // Zone_x_Channel_y -> { mode, scenarios, auto, brightness_user, brightness_real }, наповнюється
         // лише з LogicService/+ (retained стан + живі оновлення).
         this._channelState = {};
         // device (ieee-адреса) -> { zone, device, status: 'offline' }.
@@ -112,6 +141,9 @@ class GreenhouseZoneCard extends HTMLElement {
 
         // Стосується мікромолей
         this._unsubMaxUmol = null;
+        this._unsubSensor = null;
+        // Поточне значення датчика з LogicService/bridge/sensor (null = ще не було).
+        this._sensorValue = null;
         this._maxUmolState = {};
 
         this._toastStackRoot = null;
@@ -186,14 +218,24 @@ class GreenhouseZoneCard extends HTMLElement {
             console.error('[GreenhouseZoneCard] Не вдалось підписатись на max_umol:', err);
         }
 
+        try {
+            this._unsubSensor = await this._hass.connection.subscribeMessage(
+                (message) => this._onSensorMessage(message),
+                { type: 'mqtt/subscribe', topic: `${CONTROL_PREFIX}/bridge/sensor` }
+            );
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Не вдалось підписатись на sensor:', err);
+        }
+
     }
 
     // Обробка повідомлення з LogicService/Zone_x_Channel_y, яке містить JSON-об'єкт виду:
     // {
     //   "mode": "manual",
     //   "scenarios": [...],
-    //   "brightness": 75,
-    //   "state": "ON"
+    //   "auto": true,
+    //   "brightness_user": 80,
+    //   "brightness_real": 75
     // }
     _onLogicServiceMessage(message) {
         const prefix = `${CONTROL_PREFIX}/`;
@@ -209,6 +251,8 @@ class GreenhouseZoneCard extends HTMLElement {
         } catch {
             return;
         }
+
+        console.log(`[GreenhouseZoneCard] Отримано оновлення ${group}:`, parsed);
 
         this._channelState[group] = parsed;
         this._updateZoneStatuses();
@@ -266,6 +310,40 @@ class GreenhouseZoneCard extends HTMLElement {
         } catch (err) {
             console.warn('[GreenhouseZoneCard] Некоректний JSON у max_umol:', message.payload);
         }
+    }
+
+    // LogicService/bridge/sensor: {"lux": 1554}
+    _onSensorMessage(message) {
+        let data;
+        try {
+            data = JSON.parse(message.payload);
+        } catch {
+            return;
+        }
+        const raw = data && (data.lux !== undefined ? data.lux : data.umol);
+        const n = Number(raw);
+        this._sensorValue = Number.isNaN(n) ? null : n;
+        this._updateAutoMenu();
+    }
+
+    // Авто - опція зони (як і mode): читається з каналу 1, пишеться в усі.
+    _isZoneAuto(zone) {
+        return !!this._getChannelState(zone, 1).auto;
+    }
+
+    _setZoneAuto(zone, on) {
+        for (let ch = 1; ch <= CHANNELS_PER_ZONE; ch++) {
+            this._publishSet(zone, ch, { auto: on });
+            const cfg = this._getChannelState(zone, ch);
+            this._channelState[groupName(zone, ch)] = { ...cfg, auto: on };
+        }
+        this._renderModeRow();
+        this._updateAutoMenu();
+    }
+
+    // Режим у модалці: лише manual/timer (старе значення "auto" показуємо як manual).
+    _zoneMode(zone) {
+        return this._getChannelState(zone, 1).mode === 'timer' ? 'timer' : 'manual';
     }
 
     _getChannelState(zone, channel) {
@@ -443,11 +521,13 @@ class GreenhouseZoneCard extends HTMLElement {
             for (let j = 1; j <= CHANNELS_PER_ZONE; j++) {
                 const _cfg = this._getChannelState(i, j);
                 
-                if (_cfg.state === 'ON') {
+                // Підсвітка плитки залежить лише від brightness_user: зона
+                // "увімкнена", якщо хоч на одному каналі >0%. brightness_real
+                // і state тут не використовуються.
+                const temp_brightness = userBrightness(_cfg);
+                if (temp_brightness > 0) {
                     isZoneOn = true;
                 }
-                
-                const temp_brightness = _cfg.brightness || 0;
                 arithmetic_mean_brightness += temp_brightness;
             }
             
@@ -1064,6 +1144,51 @@ class GreenhouseZoneCard extends HTMLElement {
                 .gh-modal-box .gh-sched .gh-sched-head > div {
                     font-size: ${TABLE_FONT_SIZE}px !important;
                 }
+                /* ---- Авто: пілюля-індикатор та екран Авто ---- */
+                .gh-pill-auto { display: flex; align-items: center; justify-content: center; gap: 7px; }
+                .gh-auto-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.35); display: inline-block; }
+                /* Авто увімкнено, але екран Авто не відкритий: синя рамка й крапка */
+                .gh-pill-auto.on:not(.active) { border-color: var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); }
+                .gh-pill-auto.on:not(.active) .gh-auto-dot { background: var(--primary-color, #03a9f4); }
+                .gh-pill-auto.active .gh-auto-dot { background: rgba(255, 255, 255, 0.55); }
+                .gh-pill-auto.active.on .gh-auto-dot { background: #fff; }
+                /* Екран Авто: зліва таблиця (Вказано | Реально | Різниця), справа кнопка і сенсор */
+                .gh-auto-layout { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; }
+                .gh-auto-table {
+                    flex: 1 1 320px; min-width: 0;
+                    display: grid; grid-template-columns: minmax(80px, auto) 1fr 1fr 1fr;
+                }
+                .gh-auto-cell {
+                    display: flex; align-items: center; justify-content: center;
+                    padding: 14px 8px; border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+                }
+                .gh-auto-name { justify-content: flex-start; gap: 8px; padding-left: 2px; }
+                .gh-auto-th { padding-top: 4px; border-bottom-color: rgba(255, 255, 255, 0.2); }
+                /* вертикальні риски між колонками значень (Вказано | Реально | Різниця) */
+                .gh-auto-sep { border-left: 1px solid rgba(255, 255, 255, 0.28); }
+                .gh-auto-side { flex: 0 1 220px; min-width: 180px; display: flex; flex-direction: column; gap: 14px; }
+                .gh-auto-btn {
+                    width: 100%; min-height: 84px; box-sizing: border-box; padding: 14px;
+                    border-radius: 16px; border: 1px solid rgba(255, 255, 255, 0.15);
+                    background: rgba(255, 255, 255, 0.05); color: var(--primary-text-color);
+                    cursor: pointer; transition: all 0.2s ease;
+                }
+                .gh-auto-btn.on {
+                    background: var(--primary-color, #03a9f4);
+                    border-color: var(--primary-color, #03a9f4);
+                    color: white;
+                }
+                .gh-auto-btn:active { opacity: 0.85; }
+                .gh-auto-sensor { display: flex; flex-direction: column; gap: 4px; }
+                .gh-modal-box .gh-auto-th,
+                .gh-modal-box .gh-auto-name,
+                .gh-modal-box .gh-auto-btn,
+                .gh-modal-box .gh-auto-sensor,
+                .gh-modal-box .gh-auto-sensor-unit { font-size: ${TEXT_FONT_SIZE}px !important; font-weight: 500 !important; }
+                .gh-modal-box .gh-auto-cell b,
+                .gh-modal-box .gh-auto-sensor b {
+                    font-size: ${NUMBER_FONT_SIZE}px !important; font-weight: 700 !important; font-variant-numeric: tabular-nums;
+                }
                 .gh-auto-placeholder {
                     padding: 40px 10px;
                     text-align: center;
@@ -1135,27 +1260,43 @@ class GreenhouseZoneCard extends HTMLElement {
     }
 
     // mode - один на зону: пілюлі читають стан каналу 1, клік застосовує
-    // режим одразу на кожен канал.
+    // режим одразу на кожен канал. "Авто" - не режим, а опція: пілюля
+    // перемикає робочу область на екран Авто (замість ручного/таймера), а
+    // синя крапка/рамка показує, що Авто увімкнено.
     _renderModeRow() {
         const { zone } = this._modalState;
-        const cfg = this._getChannelState(zone, 1);
+        const mode = this._zoneMode(zone);
+        const viewAuto = this._modalState.view === 'auto';
+        const autoOn = this._isZoneAuto(zone);
         const row = this._modalRoot.querySelector('#gh-mode-row');
         const modes = [
-            { key: 'manual', label: 'Мануал' },
+            { key: 'manual', label: 'Ручний' },
             { key: 'timer', label: 'Таймер' },
-            { key: 'auto', label: 'Авто' },
         ];
 
         row.innerHTML = modes
-            .map((m) => `<div class="gh-pill ${m.key === cfg.mode ? 'active' : ''}" data-mode="${m.key}">${m.label}</div>`)
-            .join('');
+            .map((m) => `<div class="gh-pill ${!viewAuto && m.key === mode ? 'active' : ''}" data-mode="${m.key}">${m.label}</div>`)
+            .join('') +
+            `<div class="gh-pill gh-pill-auto ${viewAuto ? 'active' : ''} ${autoOn ? 'on' : ''}" data-auto="1"><i class="gh-auto-dot"></i>Авто</div>`;
 
-        row.querySelectorAll('.gh-pill').forEach((el) => {
+        row.querySelectorAll('.gh-pill[data-mode]').forEach((el) => {
             el.addEventListener('click', () => {
                 const newMode = el.dataset.mode;
-                if (newMode === cfg.mode) return;
-                this._setZoneMode(zone, newMode);
+                this._modalState.view = 'mode';
+                if (newMode !== this._zoneMode(zone)) {
+                    this._setZoneMode(zone, newMode); // сам перемальовує пілюлі й тіло
+                } else {
+                    this._renderModeRow();
+                    this._renderModalBody();
+                }
             });
+        });
+
+        row.querySelector('.gh-pill-auto').addEventListener('click', () => {
+            if (this._modalState.view === 'auto') return;
+            this._modalState.view = 'auto';
+            this._renderModeRow();
+            this._renderModalBody();
         });
     }
 
@@ -1177,28 +1318,17 @@ class GreenhouseZoneCard extends HTMLElement {
 
     _renderModalBody() {
         const { zone } = this._modalState;
-        const zoneMode = this._getChannelState(zone, 1).mode; // спільний на всю зону
         const body = this._modalRoot.querySelector('#gh-modal-body');
 
-        let html;
-        if (zoneMode === 'manual') {
-            html = this._renderManualSection(zone);
-        } else if (zoneMode === 'timer') {
-            html = this._renderTimerSection(zone);
-        } else if (zoneMode === 'auto') {
-            html = this._renderAutoSection(zone);
-        } else {
-            html = `<div class="gh-auto-placeholder">Невідомий режим</div>`;
-        }
-
-        body.innerHTML = html;
-
-        if (zoneMode === 'manual') {
-            this._attachManualListeners(zone);
-        } else if (zoneMode === 'timer') {
-            this._attachTimerListeners(zone);
-        } else if (zoneMode === 'auto') {
+        if (this._modalState.view === 'auto') {
+            body.innerHTML = this._renderAutoSection(zone);
             this._attachAutoListeners(zone);
+        } else if (this._zoneMode(zone) === 'timer') {
+            body.innerHTML = this._renderTimerSection(zone);
+            this._attachTimerListeners(zone);
+        } else {
+            body.innerHTML = this._renderManualSection(zone);
+            this._attachManualListeners(zone);
         }
     }
 
@@ -1206,7 +1336,7 @@ class GreenhouseZoneCard extends HTMLElement {
 _renderManualSection(zone) {
     const channelsHtml = this._channelIndexes().map((ch) => {
         const pct = clampPercent(
-            this._getChannelState(zone, ch).brightness || 0
+            userBrightness(this._getChannelState(zone, ch))
         );
         const color = this._channelColor(ch);
 
@@ -1269,7 +1399,7 @@ _renderManualSection(zone) {
 
         <div class="gh-btn-row">
             <button class="gh-secondary-btn" id="gh-m-off">
-                Вимкнути все
+                Все на 0%
             </button>
             <button class="gh-secondary-btn" id="gh-m-max">
                 Все на 100%
@@ -1359,14 +1489,15 @@ _attachManualListeners(zone) {
         if (range) range.value = pct;
         if (number) number.value = pct;
 
-        this._publishSet(zone, ch, { brightness: pct });
+        // Пишемо лише brightness_user. brightness_real і state визначає бекенд
+        // (алгоритми) - їх прийде оновити retained-повідомленням.
+        this._publishSet(zone, ch, { brightness_user: pct });
 
         const cfg = this._getChannelState(zone, ch);
 
         this._channelState[groupName(zone, ch)] = {
             ...cfg,
-            brightness: pct,
-            state: pct > 0 ? 'ON' : 'OFF'
+            brightness_user: pct
         };
 
         this._updateZoneStatuses();
@@ -1605,15 +1736,13 @@ _attachManualListeners(zone) {
             `;
         }
 
-        const title = isAuto ? 'Авторозклад' : 'Таймерний розклад';
         const minWidth = 26 + 100 + (2 * n + 1) * 50 + (2 * n + 3) * 8;
 
         return `
-            <div class="gh-section-title">${title}</div>
             <div class="gh-sched-wrap">
                 <div class="gh-sched" style="--n:${n}; min-width:${minWidth}px">
                     <div class="gh-scenario-row gh-sched-head">
-                        <div>№</div><div>Час</div>
+                        <div></div><div>Час</div>
                         ${pctHeads}
                         ${umolHeads}
                         <div>Σ</div>
@@ -1628,9 +1757,7 @@ _attachManualListeners(zone) {
             </div>
             <button class="gh-save-btn" id="gh-save-scenarios">Зберегти розклад</button>
             <div class="gh-hint">
-                Рядки без часу ігноруються при збереженні. Один час - спільний для всіх каналів,
-                розклад зберігається окремо в кожен канал. «Очистити» лише очищає форму -
-                щоб застосувати, натисни «Зберегти розклад».
+                Рядки без часу ігноруються при збереженні. «Очистити» лише очищає введені дані - щоб застосувати, натисни «Зберегти розклад».
             </div>
         `;
     }
@@ -1731,90 +1858,116 @@ _attachManualListeners(zone) {
 
         this._recalcUmolColumn();
     }
-    // Авторежим - це той самий таймерний розклад (ГГ:ХХ + відсоток, 12
-    // слотів, копіювання/вставка, збереження), тільки зверху інший текст і
-    // міні-слайдер поточного показника замість опису розкладу. Слайдер -
-    // тимчасова заміна реального датчика PPFD: рухаючи його, оператор сам
-    // публікує {"lux": ...} у LogicService/bridge/sensor,
+    // ---- Екран "Авто" (опція для будь-якого режиму) ----
+    // Займає ту саму робочу область, що й ручний режим/таймер. Показує: чи
+    // увімкнено Авто, по кожному каналу - вказано/реально/різницю,
+    // та поточне значення датчика. Будується один раз, далі _updateAutoMenu
+    // лише оновлює текст (щоб не збити слайдер).
     _renderAutoSection(zone) {
-            const lux = this._lastUmolReading || 0;
-            const topHtml = `
-                <div class="gh-section-title">Поточний рівень (тимчасово вручну, потім - датчик)</div>
-                <div class="gh-field-row">
-                    <input type="range" min="0" max="2500" id="gh-auto-sensor-range" value="${lux}">
-                    <input type="number" min="0" id="gh-auto-sensor-number" value="${lux}">
+        const rows = this._channelIndexes().map((ch) => `
+            <div class="gh-auto-cell gh-auto-name"><i class="gh-orb" style="background:${this._channelColor(ch)}"></i>${this._channelLabel(ch)}</div>
+            <div class="gh-auto-cell"><b id="gh-auto-set-${ch}">–</b></div>
+            <div class="gh-auto-cell gh-auto-sep"><b id="gh-auto-cur-${ch}">–</b></div>
+            <div class="gh-auto-cell gh-auto-sep"><b id="gh-auto-delta-${ch}">–</b></div>`).join('');
+
+        const debugSlider = DEBUG_UMOL_SENSOR ? `
+            <div class="gh-field-row" style="margin-top:14px">
+                <input type="range" min="0" max="2500" id="gh-auto-sensor-range" value="${this._lastUmolReading || 0}">
+                <input type="number" min="0" id="gh-auto-sensor-number" value="${this._lastUmolReading || 0}">
+            </div>
+            <div class="gh-hint">Тимчасова заміна датчика: публікує {"lux": ...} в LogicService/bridge/sensor.</div>` : '';
+
+        return `
+            <div id="gh-auto-panel">
+                <div class="gh-auto-layout">
+                    <div class="gh-auto-table">
+                        <div class="gh-auto-cell gh-auto-th"></div>
+                        <div class="gh-auto-cell gh-auto-th">Вказано</div>
+                        <div class="gh-auto-cell gh-auto-th gh-auto-sep">Реально</div>
+                        <div class="gh-auto-cell gh-auto-th gh-auto-sep">Різниця</div>
+                        ${rows}
+                    </div>
+                    <div class="gh-auto-side">
+                        <button class="gh-auto-btn" id="gh-auto-switch" aria-pressed="false">Увімкнути авто</button>
+                        <div class="gh-auto-sensor">
+                            <div>Значення сенсору</div>
+                            <div><b id="gh-auto-sensor-val">–</b> <span class="gh-auto-sensor-unit">${SENSOR_UNIT_LABEL}</span></div>
+                        </div>
+                    </div>
                 </div>
-                <div class="gh-hint" style="margin-bottom: 20px;">
-                    Публікується в LogicService/bridge/sensor ({"lux": ...}) - тимчасова
-                    заміна реального датчика PPFD, поки він не підключений.
-                </div>
-            `;
-
-            if (!DEBUG_UMOL_SENSOR){
-                return this._renderScheduleSection(zone, true);
-            }
-            return topHtml + this._renderScheduleSection(zone, true);
-        }
-
-    _collectAutoScenariosFromForm() {
-        const timeInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-time');
-        const percentInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-percent');
-
-        const autoScenarios = [];
-        timeInputs.forEach((timeInput, idx) => {
-            const time = timeInput.value;
-            if (!time) return; // порожній час ігнорується, як і в таймерному розкладі
-            const percentRaw = percentInputs[idx].value;
-            autoScenarios.push({ time, brightness: clampPercent(percentRaw === '' ? 0 : percentRaw) });
-        });
-        return autoScenarios;
-    }
-
-    // Заповнює вже відрендерені поля значеннями з масиву (вставка з буфера) -
-    // той самий підхід, що й _populateTimerRows.
-    _populateAutoScenarioRows(autoScenarios) {
-        const hhInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-time ~ .gh-time-hh, .gh-time-input .gh-time-hh');
-        const mmInputs = this._modalRoot.querySelectorAll('.gh-time-input .gh-time-mm');
-        const timeInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-time');
-        const percentInputs = this._modalRoot.querySelectorAll('.gh-auto-slot-percent');
-
-        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
-            const entry = autoScenarios[idx] || {};
-            const time = entry.time || '';
-            const [hh, mm] = time.split(':');
-
-            if (hhInputs[idx]) hhInputs[idx].value = hh || '';
-            if (mmInputs[idx]) mmInputs[idx].value = mm || '';
-            if (timeInputs[idx]) timeInputs[idx].value = time;
-            if (percentInputs[idx]) percentInputs[idx].value = entry.brightness !== undefined ? entry.brightness : '';
-        }
+                ${debugSlider}
+            </div>
+        `;
     }
 
     _attachAutoListeners(zone) {
-            // --- Слайдер поточного рівня ---
-            const sensorRange = this._modalRoot.querySelector('#gh-auto-sensor-range');
-            const sensorNumber = this._modalRoot.querySelector('#gh-auto-sensor-number');
-            
-            if (sensorRange && sensorNumber) {
-                const sync = (value) => {
-                    sensorRange.value = value;
-                    sensorNumber.value = value;
-                };
-                const commit = (value) => {
-                    const clamped = clampUmol(value);
-                    sync(clamped);
-                    this._lastUmolReading = clamped;
-                    this._publishSensorReading(clamped);
-                };
+        this._modalRoot.querySelector('#gh-auto-switch').addEventListener('click', () => {
+            this._setZoneAuto(zone, !this._isZoneAuto(zone));
+        });
 
-                sensorRange.addEventListener('input', () => sync(sensorRange.value));
-                sensorRange.addEventListener('change', () => commit(sensorRange.value));
-                sensorNumber.addEventListener('change', () => commit(sensorNumber.value));
-            }
-
-            // --- Слухачі авторозкладу ---
-            this._attachScheduleListeners(zone, true);
+        // Тимчасовий слайдер, що імітує датчик (DEBUG_UMOL_SENSOR).
+        const sensorRange = this._modalRoot.querySelector('#gh-auto-sensor-range');
+        const sensorNumber = this._modalRoot.querySelector('#gh-auto-sensor-number');
+        if (sensorRange && sensorNumber) {
+            const sync = (value) => {
+                sensorRange.value = value;
+                sensorNumber.value = value;
+            };
+            const commit = (value) => {
+                const clamped = clampUmol(value);
+                sync(clamped);
+                this._lastUmolReading = clamped;
+                this._publishSensorReading(clamped);
+            };
+            sensorRange.addEventListener('input', () => sync(sensorRange.value));
+            sensorRange.addEventListener('change', () => commit(sensorRange.value));
+            sensorNumber.addEventListener('change', () => commit(sensorNumber.value));
         }
+
+        this._updateAutoMenu();
+    }
+
+    // Оновлює значення на екрані Авто (нічого не робить, якщо він не відкритий).
+    // Вказано = brightness_user, Реально = brightness_real, Різниця = user - real.
+    _updateAutoMenu() {
+        if (!this._modalRoot || !this._modalState) return;
+        const panel = this._modalRoot.querySelector('#gh-auto-panel');
+        if (!panel) return;
+        const { zone } = this._modalState;
+        const on = this._isZoneAuto(zone);
+
+        // Кнопка світиться так само, як активна пілюля режиму (.gh-pill.active).
+        const sw = panel.querySelector('#gh-auto-switch');
+        sw.classList.toggle('on', on);
+        sw.setAttribute('aria-pressed', on ? 'true' : 'false');
+        sw.textContent = on ? 'Авто увімкнено' : 'Увімкнути авто';
+
+        this._channelIndexes().forEach((ch) => {
+            const cfg = this._getChannelState(zone, ch);
+            const wanted = userBrightness(cfg);
+            const current = realBrightness(cfg);
+            const delta = wanted - current;
+            const set = (id, v) => {
+                const el = panel.querySelector(id);
+                if (el) el.textContent = `${formatUmol(v)}%`;
+            };
+            set(`#gh-auto-set-${ch}`, wanted);
+            set(`#gh-auto-cur-${ch}`, current);
+            set(`#gh-auto-delta-${ch}`, delta);
+        });
+
+        const valEl = panel.querySelector('#gh-auto-sensor-val');
+        if (valEl) valEl.textContent = this._sensorValue === null ? '–' : formatUmol(this._sensorValue);
+
+        // Дебаг-слайдер підтягує реальне значення, якщо користувач його не тримає.
+        const range = panel.querySelector('#gh-auto-sensor-range');
+        const number = panel.querySelector('#gh-auto-sensor-number');
+        if (range && number && this._sensorValue !== null &&
+            document.activeElement !== range && document.activeElement !== number) {
+            range.value = this._sensorValue;
+            number.value = this._sensorValue;
+        }
+    }
 
     // Оновлення живих значень у відкритій модалці: пілюлі режиму і поля
     // активного каналу оновлюються з MQTT; редактор таймера навмисно не
@@ -1828,18 +1981,23 @@ _attachManualListeners(zone) {
     _refreshChannelSpecificValues() {
         if (!this._modalState || !this._modalRoot) return;
         const { zone } = this._modalState;
-        const zoneMode = this._getChannelState(zone, 1).mode;
+        const zoneMode = this._zoneMode(zone);
+
+        if (this._modalState.view === 'auto') {
+            this._updateAutoMenu();
+            return;
+        }
 
         if (zoneMode === 'manual') {
             this._channelIndexes().forEach((ch) => {
                 const cfg = this._getChannelState(zone, ch);
                 const range = this._modalRoot.querySelector(`.gh-m-range[data-ch="${ch}"]`);
                 if (range && document.activeElement !== range) {
-                    range.value = clampPercent(cfg.brightness || 0);
+                    range.value = clampPercent(userBrightness(cfg));
                 }
             });
             this._updateManualDisplay();
-        } else if (zoneMode === 'timer' || zoneMode === 'auto') {
+        } else if (zoneMode === 'timer') {
             this._recalcUmolColumn();
         }
     }
@@ -1852,6 +2010,14 @@ _attachManualListeners(zone) {
         if (this._unsubBridgeRequest) {
             this._unsubBridgeRequest();
             this._unsubBridgeRequest = null;
+        }
+        if (this._unsubMaxUmol) {
+            this._unsubMaxUmol();
+            this._unsubMaxUmol = null;
+        }
+        if (this._unsubSensor) {
+            this._unsubSensor();
+            this._unsubSensor = null;
         }
         this._mqttSubscribed = false;
     }
