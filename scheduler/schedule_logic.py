@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from logging import log
 from typing import Any, Optional
 from scheduler.store import ChannelStore
+import math
 
 
 @dataclass(frozen=True)
@@ -109,12 +110,12 @@ def umol_to_percent(umol: float, umol_multiplier: float) -> float:
         return 0.0
     return umol / umol_multiplier
 
+# Система PBD Power balance dynamic коригує цільовий відсоток так щоб 
+# значення не перевищувало максимальну потужність лампи у ватах
+def PBD_correction():
+    return 0
 
-def auto_correction_resolve(
-    percent: int,
-    sensor_lux: float,
-    max_umol: float,
-) -> Optional[int]:
+def auto_correction_resolve(percent: int, sensor_lux: float, max_umol: float,) -> Optional[int]:
     """
     Авторежим: базовий відсоток береться з розкладу (той самий алгоритм,
     що й у таймері - resolve_target_brightness), переводиться в μmol за
@@ -146,3 +147,35 @@ def auto_correction_resolve(
 
     return int(round(target_percent))
 
+def pbd_limit(
+    targets: dict[int, int],          # {channel: percent} після таймера/авто
+    channel_watts: dict[int, float],  # ват на 100%
+    max_watts: float,
+    yield_channel: Optional[int] = None,
+) -> dict[int, int]:
+    def total(t):
+        return sum(t[ch] / 100 * channel_watts.get(ch, 0.0) for ch in t)
+
+    result = dict(targets)
+    excess = total(result) - max_watts
+    if excess <= 0:
+        return result
+
+    # 1) спершу зрізаємо "поступливий" канал
+    w = channel_watts.get(yield_channel, 0.0) if yield_channel in result else 0.0
+    if w > 0:
+        cur_w = result[yield_channel] / 100 * w
+        cut = min(cur_w, excess)
+        result[yield_channel] = max(0, math.floor((cur_w - cut) / w * 100))
+        excess = total(result) - max_watts
+        if excess <= 0:
+            return result
+
+    # 2) якщо ще перебір — пропорційно зменшуємо решту
+    others = [ch for ch in result if ch != yield_channel]
+    others_w = sum(result[ch] / 100 * channel_watts.get(ch, 0.0) for ch in others)
+    if others_w > 0:
+        k = max(0.0, (others_w - excess) / others_w)
+        for ch in others:
+            result[ch] = math.floor(result[ch] * k)   # floor, щоб ніколи не перевищити ліміт
+    return result    

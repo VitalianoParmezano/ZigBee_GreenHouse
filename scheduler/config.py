@@ -37,6 +37,22 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         raise ValueError(f"Конфiг-файл {path} порожнiй або має неправильний формат (очiкується YAML-об'єкт).")
     return data
 
+@dataclass(frozen=True)
+class PowerSettings:
+    enabled: bool
+    max_watts: float
+    yield_channel: Optional[int]
+    channel_watts: dict[int, float]
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "PowerSettings":
+        p = raw.get("power") or {}
+        return cls(
+            enabled=bool(p.get("enabled", False)),
+            max_watts=float(p.get("max_watts", 0)),
+            yield_channel=p.get("yield_channel"),
+            channel_watts={int(k): float(v) for k, v in (p.get("channel_watts") or {}).items()},
+        )
 
 @dataclass(frozen=True)
 class Settings:
@@ -53,6 +69,7 @@ class Settings:
     log_level: str
     log_dir: str
     log_retention_days: int
+    power: PowerSettings
     transition:Optional[int] = 0
 
     @classmethod
@@ -61,6 +78,7 @@ class Settings:
         sched = raw.get("scheduler") or {}
         logging_cfg = raw.get("logging") or {}
         sensor_cfg = raw.get("sensor") or {}
+        power_cfg = raw.get("power") or {}
         return cls(
             mqtt_host=str(mqtt.get("host", "localhost")),
             mqtt_port=int(mqtt.get("port", 1883)),
@@ -77,6 +95,8 @@ class Settings:
             log_level=str(logging_cfg.get("level", "INFO")).upper(),
             log_dir=str(logging_cfg.get("dir", "logs")),
             log_retention_days=int(logging_cfg.get("retention_days", 7)),
+
+            power=PowerSettings.from_dict(raw),
         )
 
 
