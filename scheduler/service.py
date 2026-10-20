@@ -107,8 +107,33 @@ class SchedulerService:
         for zone in range(1, settings.zones + 1):
             self.process_zone(zone)
 
-    def _resolve_channel(self, zone: int, channel: int, now_minutes: int,
-                        max_umol: float, lux: float) -> int:
+    # Цей метод викликається з двох потоків: тік і коли приходить /set.
+    def process_zone(self, zone: int) -> None:
+        with self._lock:
+            now = datetime.now()
+            now_minutes = now.hour * 60 + now.minute
+            channels = range(1, settings.channels_per_zone + 1)
+
+            targets = {ch: self._resolve_channel(zone, ch, now_minutes) for ch in channels}
+
+            # ---------- PBD ----------
+            pw = settings.power
+            if pw.enabled:
+                targets = pbd_limit(targets, pw.channel_watts, pw.max_watts, pw.yield_channel)
+
+            # ---------- AUTO ----------
+            lux = self.state.get_sensor_lux()
+            max_umol = self.state.store.get_all_lamp_max_umols()
+            for ch in channels:
+                if self.state.get_channel_config(zone, ch)["auto"]:
+                    corrected = auto_correction_resolve(targets[ch], lux, max_umol.get(ch, 0.0))
+                    targets[ch] = corrected if corrected is not None else 0
+
+            # ---------- відправка ----------
+            for ch, value in targets.items():
+                self.state.apply_brightness(zone, ch, value)
+
+    def _resolve_channel(self, zone: int, channel: int, now_minutes: int) -> int:
         label = f"Zone {zone} / Channel {channel}"
         cfg = self.state.get_channel_config(zone, channel)
         mode = cfg["mode"]
@@ -131,28 +156,4 @@ class SchedulerService:
             log.warning("%s: невідомий mode=%r -> 0%%", label, mode)
             return 0
 
-        if cfg["auto"]:
-            log.debug("%s: auto увімкнено", label)
-            corrected = auto_correction_resolve(target, lux, max_umol)
-            target = corrected if corrected is not None else 0
-
         return int(target)
-
-
-    def process_zone(self, zone: int) -> None:
-        with self._lock:
-            now = datetime.now()
-            now_minutes = now.hour * 60 + now.minute
-            max_umol = self.state.store.get_all_lamp_max_umols()
-            lux = self.state.get_sensor_lux()
-
-            targets = {
-                ch: self._resolve_channel(zone, ch, now_minutes, max_umol.get(ch, 0.0), lux)
-                for ch in range(1, settings.channels_per_zone + 1)
-            }
-            pw = settings.power
-            if pw.enabled:
-                targets = pbd_limit(targets, pw.channel_watts, pw.max_watts, pw.yield_channel)
-
-            for ch, value in targets.items():
-                self.state.apply_brightness(zone, ch, value)
