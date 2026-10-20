@@ -39,7 +39,7 @@ holding_reg_params_t holding_reg_params = { 0 };
 static const char *TAG = "MODBUS";
 static void *master_handle = NULL;
 
-enum { MB_DEVICE_ADDR1 = 1 };
+enum { MB_DEVICE_ADDR1 = 0 };
 
 enum {
     CID_TEMP = 0,
@@ -91,7 +91,7 @@ void modbus_init(void) {
         .ser_opts.baudrate = MB_DEV_SPEED,
         .ser_opts.parity = MB_PARITY_NONE,
         .ser_opts.uid = 0,
-        .ser_opts.response_tout_ms = 1000,
+        .ser_opts.response_tout_ms = 1,
         .ser_opts.data_bits = UART_DATA_8_BITS,
         .ser_opts.stop_bits = UART_STOP_BITS_1
     };
