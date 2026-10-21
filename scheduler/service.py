@@ -122,12 +122,16 @@ class SchedulerService:
                 targets = pbd_limit(targets, pw.channel_watts, pw.max_watts, pw.yield_channel)
 
             # ---------- AUTO ----------
-            lux = self.state.get_sensor_lux()
-            max_umol = self.state.store.get_all_lamp_max_umols()
-            for ch in channels:
-                if self.state.get_channel_config(zone, ch)["auto"]:
-                    corrected = auto_correction_resolve(targets[ch], lux, max_umol.get(ch, 0.0))
-                    targets[ch] = corrected if corrected is not None else 0
+            auto_targets = {
+                ch: targets[ch] for ch in channels
+                if self.state.get_channel_config(zone, ch)["auto"]
+            }
+            if auto_targets:
+                targets.update(auto_correction_resolve(
+                    auto_targets,
+                    self.state.get_sensor_lux(),
+                    self.state.store.get_all_lamp_max_umols(),
+                ))
 
             # ---------- відправка ----------
             for ch, value in targets.items():

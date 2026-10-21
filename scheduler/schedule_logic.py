@@ -115,37 +115,23 @@ def umol_to_percent(umol: float, umol_multiplier: float) -> float:
 def PBD_correction():
     return 0
 
-def auto_correction_resolve(percent: int, sensor_lux: float, max_umol: float,) -> Optional[int]:
-    """
-    Авторежим: базовий відсоток береться з розкладу (той самий алгоритм,
-    що й у таймері - resolve_target_brightness), переводиться в μmol за
-    калібрувальним множником, і з нього віднімається те, що вже реально
-    показує датчик (сонце, сусідні лампи тощо) - різниця конвертується
-    назад у відсоток і є тим, що треба доввімкнути штучним світлом.
+def auto_correction_resolve(
+    targets: dict[int, int],      # {channel: percent} - канали, які треба скоригувати
+    sensor_lux: float,
+    max_umol: dict[int, float],   # {channel: μmol на PERCENT_MAX}
+) -> dict[int, int]:
+    """Множить відсотки каналів на коефіцієнт, який враховує світло датчика."""
+    sensor_umol = sensor_lux / 69 # 69 lux = 1 μmol/m²/s (PPFD) для білого світла       # УВАГА! ХАРДКОД
+    target_umol = sum(
+        pct * max_umol.get(ch, 0.0) / 100 for ch, pct in targets.items()
+    )
+    if target_umol <= 0:
+        return dict(targets)   # нічого не просили або max_umol не задано
 
-    Приклад: розклад каже "50%" о цій годині, множник 25.0 -> цільові
-    50 * 25 = 1250 μmol. Датчик показує 300 μmol (частково є природне
-    світло) -> треба ще (1250 - 300) / 25 = 38% штучного світла, а не
-    повні 50%. Якщо датчик уже показує 1250+ μmol - результат обрізається
-    до 0 (світла й так достатньо, доввімкнювати нічого не треба).
+    k = (target_umol - sensor_umol) / target_umol
+    k = max(0.0, min(1.0, k))  # коефіцієнт тільки в межах 0..1
 
-    Повертає None, якщо розклад порожній (як і resolve_target_brightness).
-    """
-
-    sensor_umol = sensor_lux / 69  # Переводимо lux -> μmol/m²/s (PPFD) за емпіричною формулою
-
-    user_percent = max(0, min(100, percent))  # обрізаємо в межі 0..100, якщо хтось там на фронті щось криво ввів
-    
-    target_umol = user_percent * max_umol / 100  # percent * umol_multiplier
-
-    diff_umol = target_umol - sensor_umol   # diff 
-
-    if diff_umol <= 0:
-        return 0
-
-    target_percent = diff_umol / max_umol * 100  # μmol -> percent
-
-    return int(round(target_percent))
+    return {ch: round(pct * k) for ch, pct in targets.items()}
 
 # Коментарі це інший спосіб вирішення тієї ж задачі, що й у PBD_correction(), але з більшою деталізацією, додатковим захистом і всім таким. Не видаляти
 def pbd_limit(
@@ -176,11 +162,6 @@ def pbd_limit(
     result = dict(targets)
     result[yield_channel] = max(0, min(targets[yield_channel], red_percent))
     return result
-
-    budget_pct = math.floor((max_watts - others_w) / w * 100)   # скільки % влізе в залишок
-    allowed = max(0, min(targets[yield_channel], budget_pct))
-
-    return {**targets, yield_channel: allowed}
 
     # # Перевірка чи взагалі треба обмежувати
     # result = dict(targets)
