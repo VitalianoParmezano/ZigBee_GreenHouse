@@ -134,28 +134,11 @@ power:
 
 ### Алгоритм
 
-```
-  цілі каналів зони  {ch: %}
-        |
-        v
-  total = сума (% / 100 * channel_watts[ch])
-        |
-        +-- total <= max_watts --> без змін
-        |
-        v
-  excess = total - max_watts
+```asci
+Power Red = maxPower - Power Blue - Power White
+```  
+Реалізація алгоритму в `schedule_logic.py` у функції pbd_limit
 
-  КРОК 1. Зрізаємо yield_channel на excess (але не нижче 0 %)
-        |
-        +-- перебору більше немає --> готово
-        |
-        v
-  КРОК 2. Решту каналів зменшуємо пропорційно:
-          k = (W_інших - excess) / W_інших
-          %_каналу = floor(%_каналу * k)
-```
-
-Округлення завжди **вниз** (`floor`), щоб заокруглення не підняло суму над лімітом.
 
 ### Приклади (`max_watts: 600`, `yield_channel: 1`, ват на 100 %: 200 / 250 / 300)
 

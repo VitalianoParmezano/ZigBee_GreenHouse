@@ -147,35 +147,62 @@ def auto_correction_resolve(percent: int, sensor_lux: float, max_umol: float,) -
 
     return int(round(target_percent))
 
+# Коментарі це інший спосіб вирішення тієї ж задачі, що й у PBD_correction(), але з більшою деталізацією, додатковим захистом і всім таким. Не видаляти
 def pbd_limit(
     targets: dict[int, int],          # {channel: percent} після таймера/авто
     channel_watts: dict[int, float],  # ват на 100%
     max_watts: float,
     yield_channel: Optional[int] = None,
 ) -> dict[int, int]:
-    def total(t):
-        return sum(t[ch] / 100 * channel_watts.get(ch, 0.0) for ch in t)
+    # def total(t):
+    #     return sum(t[ch] / 100 * channel_watts.get(ch, 0.0) for ch in t)
+    def watts(ch: int) -> float:
+        return targets[ch] / 100 * channel_watts.get(ch, 0.0)
+
+    total_w = sum(watts(ch) for ch in targets)
+    if total_w <= max_watts:
+        return dict(targets)
+
+    w = channel_watts.get(yield_channel, 0.0)
+    if yield_channel not in targets or w <= 0:
+        return dict(targets)
+
+    others_w = sum(
+        targets[ch] / 100 * channel_watts.get(ch, 0.0)
+        for ch in targets if ch != yield_channel
+    )
+    red_percent = math.floor((max_watts - others_w) / w * 100)
 
     result = dict(targets)
-    excess = total(result) - max_watts
-    if excess <= 0:
-        return result
+    result[yield_channel] = max(0, min(targets[yield_channel], red_percent))
+    return result
 
-    # 1) спершу зрізаємо "поступливий" канал
-    w = channel_watts.get(yield_channel, 0.0) if yield_channel in result else 0.0
-    if w > 0:
-        cur_w = result[yield_channel] / 100 * w
-        cut = min(cur_w, excess)
-        result[yield_channel] = max(0, math.floor((cur_w - cut) / w * 100))
-        excess = total(result) - max_watts
-        if excess <= 0:
-            return result
+    budget_pct = math.floor((max_watts - others_w) / w * 100)   # скільки % влізе в залишок
+    allowed = max(0, min(targets[yield_channel], budget_pct))
 
-    # 2) якщо ще перебір — пропорційно зменшуємо решту
-    others = [ch for ch in result if ch != yield_channel]
-    others_w = sum(result[ch] / 100 * channel_watts.get(ch, 0.0) for ch in others)
-    if others_w > 0:
-        k = max(0.0, (others_w - excess) / others_w)
-        for ch in others:
-            result[ch] = math.floor(result[ch] * k)   # floor, щоб ніколи не перевищити ліміт
-    return result    
+    return {**targets, yield_channel: allowed}
+
+    # # Перевірка чи взагалі треба обмежувати
+    # result = dict(targets)
+    # excess = total(result) - max_watts
+    # if excess <= 0:
+    #     return result
+
+    # # зрізаємо "поступливий" канал
+    # w = channel_watts.get(yield_channel, 0.0) if yield_channel in result else 0.0
+    # if w > 0:
+    #     cur_w = result[yield_channel] / 100 * w
+    #     cut = min(cur_w, excess)
+    #     result[yield_channel] = max(0, math.floor((cur_w - cut) / w * 100))
+    #     excess = total(result) - max_watts
+    #     if excess <= 0:
+    #         return result
+
+    # # 2) якщо ще перебір — пропорційно зменшуємо решту
+    # others = [ch for ch in result if ch != yield_channel]
+    # others_w = sum(result[ch] / 100 * channel_watts.get(ch, 0.0) for ch in others)
+    # if others_w > 0:
+    #     k = max(0.0, (others_w - excess) / others_w)
+    #     for ch in others:
+    #         result[ch] = math.floor(result[ch] * k)   # floor, щоб ніколи не перевищити ліміт
+    # return result    
