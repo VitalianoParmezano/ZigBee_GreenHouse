@@ -4,15 +4,14 @@ MQTT-шар LogicService з ДВОМА окремими зонами відпо�
 1. Реальний zigbee2mqtt - тільки для brightness/state (те, що ESP і Z2M
    дійсно розуміють - жодних кастомних кластерів більше немає).
 2. Власний топік-простір `LogicService/*` - для mode/scenarios/
-   offline_brightness/brightness, які живуть ЛИШЕ в локальній SQLite
+   brightness_user/auto, які живуть ЛИШЕ в локальній SQLite
    (store.py), бо в Zigbee/Z2M для них немає жодного бекенду.
 
 Контракт LogicService/*:
     LogicService/Zone_x_Channel_y            <- retained broadcast повного
                                                  стану після кожної зміни
     LogicService/Zone_x_Channel_y/set        <- команди запису (mode,
-                                                 scenarios, ,
-                                                 offline_brightness, brightness)
+                                                 scenarios, brightness_user, auto)
     LogicService/Zone_x_Channel_y/get        <- запит стану; порожній
                                                  payload -> усі поля,
                                                  {"a":1,"b":2} або ["a","b"]
@@ -50,7 +49,6 @@ from .store import ChannelStore
 log = logging.getLogger("mqtt_state")
 
 _GROUP_RE = re.compile(r"^Zone_(\d+)_Channel_(\d+)$")
-_ALL_FIELDS = ("mode", "scenarios", "offline_brightness", "brightness", "state")
 
 # Стандартні коди CONNACK з MQTT 3.1.1 - щоб не гадати, чому rc != 0
 _CONNACK_REASONS = {
@@ -91,7 +89,7 @@ def _parse_requested_fields(payload_bytes: bytes) -> Optional[list[str]]:
 
 def _with_derived_state(cfg: dict[str, Any]) -> dict[str, Any]:
     full = dict(cfg)
-    full["state"] = "ON" if cfg.get("brightness", 0) > 0 else "OFF"
+    full["state"] = "ON" if cfg.get("brightness_real", 0) > 0 else "OFF"
     return full
 
 
@@ -101,12 +99,14 @@ class MqttState:
 
     def __init__(self, store: Optional[ChannelStore] = None) -> None:
         self.store = store or ChannelStore()
-        # Останній відомий показник датчика (μmol/m²/s) - для авторежиму.
+        # Останній відомий показник датчика (lux) - для авторежиму.
         # 0.0 за замовчуванням, поки не прийшло жодне повідомлення в
         # bridge/sensor (консервативний дефолт: без даних датчика авторежим
         # видає повний базовий відсоток з розкладу, а не занижений).
         self.sensor_lux: float = 0.0
         self.on_set: Optional[Callable[[int], None]] = None
+
+        self._brightness_real: dict[tuple[int, int], int] = {}
 
         self._client = mqtt.Client(client_id="LogicService", protocol=mqtt.MQTTv311)
         if settings.mqtt_user:
@@ -172,7 +172,7 @@ class MqttState:
         for zone in range(1, settings.zones + 1):
             for channel in range(1, settings.channels_per_zone + 1):
                 group = group_name(zone, channel)
-                self._broadcast(group, self.store.get(zone, channel))
+                self._broadcast(group, self._channel_view(zone, channel))
                 count += 1
 
         # {"max_umol_channel1": 10.0, "max_umol_channel2": 150.0, ...} - той самий
@@ -264,16 +264,16 @@ class MqttState:
         updated = self.store.update(zone, channel, payload)
         log.info("SET %s <- %s => збережено %s", group, payload, updated)
 
-        # brightness - СПІЛЬНЕ поле для manual і timer. Явна команда з /set -
-        # це завжди миттєве керування (не чекаємо наступного тіку), незалежно
-        # від того, в якому mode зараз канал: timer на наступному тіку просто
-        # порахує й перезапише це значення знову, якщо треба.
-        #if "brightness_user" in payload:
-        #    self._publish_zigbee_brightness(zone, channel, int(payload["brightness_user"]))
+        # /set лише зберігає намір користувача. Яскравість на лампу рахує сервіс
+        # (on_set -> process_zone): так PBD/Auto не можна обійти ручною командою.
         if self.on_set:
-            self.on_set(zone)
+            try:
+                self.on_set(zone)
+            except Exception:
+                # виняток у розрахунку не повинен зупинити мережевий потік paho
+                log.exception("SET %s: помилка перерахунку зони %s", group, zone)
 
-        self._broadcast(group, updated)
+        self._broadcast(group, self._channel_view(zone, channel))
 
     def _handle_get(self, group: str, payload_bytes: bytes) -> None:
         parsed = _parse_group_name(group)
@@ -283,7 +283,7 @@ class MqttState:
         zone, channel = parsed
 
         requested = _parse_requested_fields(payload_bytes)
-        full = _with_derived_state(self.store.get(zone, channel))
+        full = _with_derived_state(self._channel_view(zone, channel))
         response = full if requested is None else {k: full[k] for k in requested if k in full}
 
         topic = f"{self.CONTROL_PREFIX}/{group}/get"
@@ -298,13 +298,16 @@ class MqttState:
 
     # ------------------------------------------------------------------ #
     def apply_brightness(self, zone: int, channel: int, target: int) -> None:
-        """Викликається з тікового циклу сервісу, коли timer-режим порахував
-        нове значення. Пише в ТЕ САМЕ поле 'brightness', що й ручне /set -
-        GET завжди повертає актуальне значення незалежно від джерела."""
-        group = group_name(zone, channel)
-        updated = self.store.update(zone, channel, {"brightness": target})
-        self._publish_zigbee_brightness(zone, channel, target)
-        self._broadcast(group, updated)
+        """Викликається сервісом з process_zone з ФІНАЛЬНИМ значенням (після
+        розкладу, PBD і Auto). Шле команду на лампу (zigbee2mqtt, поле
+        brightness) і запам'ятовує його як brightness_real для LogicService/*.
+        У БД нічого не пишеться: brightness_real - результат, а не налаштування."""
+        key = (zone, channel)
+        changed = self._brightness_real.get(key) != target
+        self._brightness_real[key] = target
+        self._publish_zigbee_brightness(zone, channel, target)   # команда щотіку
+        if changed:                                              # broadcast лише при зміні
+            self._broadcast(group_name(zone, channel), self._channel_view(zone, channel))
 
     def get_channel_config(self, zone: int, channel: int) -> dict[str, Any]:
         return self.store.get(zone, channel)
@@ -369,6 +372,12 @@ class MqttState:
 
         self._client.publish(topic, payload)
         log.info("-> %s : %s", topic, payload)
+
+    def _channel_view(self, zone: int, channel: int) -> dict[str, Any]:
+        """Налаштування з БД (намір) + brightness_real (що реально пішло на лампу)."""
+        cfg = self.store.get(zone, channel)
+        cfg["brightness_real"] = self._brightness_real.get((zone, channel), 0)
+        return cfg
 
     def _scan_payload_for_lux(self, payload_bytes: bytes) -> None:
         if not payload_bytes:
