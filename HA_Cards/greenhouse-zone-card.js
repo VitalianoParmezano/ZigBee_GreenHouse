@@ -13,8 +13,8 @@
 //   brightness_real  - що РЕАЛЬНО світить лампа після алгоритмів (Авто тощо).
 //                      Лише читається, картка її ніколи не пише.
 //   Різниця (економія Авто) = brightness_user - brightness_real - рахується
-//   в картці. brightness_real читається ЛИШЕ на екрані Авто. Плитка зони й
-//   усі інші екрани працюють тільки з brightness_user; поле state не
+//   в картці. brightness_real читається на екрані Авто та для µmol у ручному режимі. Плитка зони й
+//   решта екранів працюють тільки з brightness_user; поле state не
 //   використовується (зона увімкнена, якщо brightness_user > 0 хоч на каналі).
 //   Сценарії (scenarios[].brightness) - це план user-яскравості, не чіпаємо.
 //   LogicService/bridge/request          <- online/offline пристрою:
@@ -22,6 +22,13 @@
 //   LogicService/bridge/sensor           -> глобальний показник датчика
 //                                            (тимчасово - зі слайдера в
 //                                            Авторежимі): {"umol": ...}
+//
+// Сума µmol рядків таймера рахується в картці: Σ pct * max_umol / 100 після обмеження PBD.
+// pbdLimit() - дзеркало pbd_limit() з schedule_logic.py (тримати синхронно!). Параметри PBD:
+//   LogicService/bridge/power  (retained, публікує сервіс)
+//       {"enabled": true, "max_watts": 120, "channel_watts": {"1": 40, "2": 40, "3": 60},
+//        "yield_channel": 3}
+// Auto (датчик) у розкладі передбачити неможливо - сума показується "до Auto".
 //
 // Авто - не окремий режим, а опція (поле "auto") для будь-якого режиму:
 //   /set {"auto": true|false}         - увімк./вимк. (публікується в кожен канал зони)
@@ -44,12 +51,14 @@ const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV2'; // V2: рядк�
 const DEBUG_UMOL_SENSOR = true; // В авторежимі чи показувати ручний умоль сенсор (повзунок який імітує датчик) true = показати
 const ZONE_LABEL = 'Хатка'; // Константа яка використовується для показу кінцевому користувачу
 
+const POWER_TOPIC = `${CONTROL_PREFIX}/bridge/power`;
+
 // ---- Налаштування каналів (індекс 0 = канал 1, 1 = канал 2, ...) ----
 // Скільки мікромолей (µmol/m²/s) дає канал при 100% потужності.
 const CHANNEL_MAX_UMOL = [300, 200, 100];
 // Назви та кольори каналів у інтерфейсі.
-const CHANNEL_LABELS = ['Red', 'White', 'Blue'];
-const CHANNEL_COLORS = ['#e4464d', '#cec5ac', '#397eed'];
+const CHANNEL_LABELS = ['Red', 'Blue', 'White'];
+const CHANNEL_COLORS = ['#e4464d', '#397eed', '#cec5ac'];
 // ---- Розміри шрифтів (px) ----
 const ZONE_TITLE_FONT_SIZE = 16;  // назва зони на плитці ("Хатка 1")
 const ZONE_STATUS_FONT_SIZE = 14; // статус зони на плитці ("Увімкнено · 75%")
@@ -106,10 +115,35 @@ function formatUmol(value) {
     return String(Math.round(n * 10) / 10).replace('.', ',');
 }
 
-// '#rrggbb' -> [r, g, b]
-function hexToRgb(hex) {
-    const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(String(hex).trim());
-    return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [255, 255, 255];
+// Дзеркало pbd_limit() з schedule_logic.py: якщо сумарні ватти перевищують max_watts,
+// зрізається лише "поступливий" канал (yield_channel), округлення вниз.
+// targets: {канал: відсоток}; power: payload LogicService/bridge/power або null.
+function pbdLimit(targets, power) {
+    const result = { ...targets };
+    if (!power || !power.enabled) return result;
+
+    const maxWatts = Number(power.max_watts);
+    if (Number.isNaN(maxWatts)) return result;
+
+    const channelWatts = power.channel_watts || {};
+    const wattsPer100 = (ch) => Number(channelWatts[ch]) || 0;
+    const wattsOf = (ch) => (targets[ch] / 100) * wattsPer100(ch);
+    const channels = Object.keys(targets).map(Number);
+
+    const totalW = channels.reduce((sum, ch) => sum + wattsOf(ch), 0);
+    if (totalW <= maxWatts) return result;
+
+    const y = power.yield_channel;
+    const w = wattsPer100(y);
+    if (y === null || y === undefined || !(y in targets) || w <= 0) return result;
+
+    const othersW = channels
+        .filter((ch) => ch !== Number(y))
+        .reduce((sum, ch) => sum + wattsOf(ch), 0);
+    const redPercent = Math.floor((maxWatts - othersW) / w * 100);
+
+    result[y] = Math.max(0, Math.min(targets[y], redPercent));
+    return result;
 }
 
 const DEFAULT_CHANNEL_STATE = { mode: 'manual', scenarios: [], brightness_user: 0, brightness_real: 0 };
@@ -119,7 +153,7 @@ function userBrightness(cfg) {
     return Number(cfg && cfg.brightness_user) || 0;
 }
 
-// Що реально світить (після алгоритмів). Використовується ТІЛЬКИ на екрані Авто.
+// Що реально світить (після алгоритмів). Екран Авто і µmol у ручному режимі.
 function realBrightness(cfg) {
     return Number(cfg && cfg.brightness_real) || 0;
 }
@@ -151,6 +185,10 @@ class GreenhouseZoneCard extends HTMLElement {
         // Тимчасова заміна реального датчика PPFD: локальне (лише в цій
         // вкладці браузера) останнє виставлене значення μmol зі слайдера.
         this._lastUmolReading = 0;
+
+        // Параметри PBD з LogicService/bridge/power (null, поки не прийшли).
+        this._unsubPower = null;
+        this._power = null;
     }
 
     setConfig(config) {
@@ -225,6 +263,15 @@ class GreenhouseZoneCard extends HTMLElement {
             );
         } catch (err) {
             console.error('[GreenhouseZoneCard] Не вдалось підписатись на sensor:', err);
+        }
+
+        try {
+            this._unsubPower = await this._hass.connection.subscribeMessage(
+                (message) => this._onPowerMessage(message),
+                { type: 'mqtt/subscribe', topic: POWER_TOPIC }
+            );
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Не вдалось підписатись на bridge/power:', err);
         }
 
     }
@@ -306,6 +353,8 @@ class GreenhouseZoneCard extends HTMLElement {
             // Якщо модалка відкрита, оновлюємо живі значення (щоб одразу показати нові цифри)
             if (this._modalState && this._modalState.open) {
                 this._refreshChannelSpecificValues();
+                // Максимуми змінились - перераховуємо суми µmol у таймері.
+                this._updateScheduleSums();
             }
         } catch (err) {
             console.warn('[GreenhouseZoneCard] Некоректний JSON у max_umol:', message.payload);
@@ -997,7 +1046,7 @@ class GreenhouseZoneCard extends HTMLElement {
                 /* ---- Таблиця розкладу ---- */
                 .gh-sched-wrap { overflow-x: auto; padding-bottom: 4px; }
                 .gh-sched .gh-scenario-row {
-                    grid-template-columns: 26px 100px repeat(var(--n), minmax(46px, 1fr)) repeat(var(--n), minmax(48px, 1fr)) minmax(56px, 1fr);
+                    grid-template-columns: 26px 100px repeat(var(--n), minmax(46px, 1fr)) minmax(64px, 1fr);
                 }
                 .gh-sched .gh-scenario-row input[type="number"] { width: 100%; min-width: 0; text-align: center; padding: 0 2px; }
                 .gh-sched .gh-scenario-row input[type="number"]::-webkit-outer-spin-button,
@@ -1026,7 +1075,7 @@ class GreenhouseZoneCard extends HTMLElement {
                     background: rgba(255, 255, 255, 0.07);
                     color: var(--primary-text-color);
                 }
-                /* вертикальна риска між % та µmol */
+                /* вертикальна риска між % та сумою µmol */
                 .gh-sched .gh-umol-first { position: relative; }
                 .gh-sched .gh-umol-first::before {
                     content: ''; position: absolute; left: -5px; top: -3px; bottom: -3px;
@@ -1077,6 +1126,8 @@ class GreenhouseZoneCard extends HTMLElement {
                 .gh-manual-total-pct { border-color: transparent; background: transparent; }
                 .gh-manual-percent { flex: 0 0 auto; margin-left: -6px; opacity: 0.8; }
                 .gh-manual-umol { flex: 0 0 82px; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; opacity: 0.85; }
+                /* Сума µmol стоїть у колонці полів % (поле + знак %), під ними */
+                .gh-manual-total-umol { flex: 0 0 72px; text-align: center; }
                 /* ---- Єдина типографіка модалки: весь текст однаковий, усі числа однакові ---- */
                 .gh-modal-box .gh-pill,
                 .gh-modal-box .gh-section-title,
@@ -1365,11 +1416,6 @@ _renderManualSection(zone) {
                     >
 
                     <span class="gh-manual-percent">%</span>
-
-                    <span
-                        class="gh-manual-umol"
-                        data-ch="${ch}"
-                    >${formatUmol(this._getMaxUmol(ch) * pct / 100)} µmol</span>
                 </div>
             </div>
         `;
@@ -1387,11 +1433,7 @@ _renderManualSection(zone) {
                     `).join('')}
                 </div>
 
-                <span class="gh-manual-number gh-manual-total-pct" id="gh-manual-total-pct">0</span>
-
-                <span class="gh-manual-percent">%</span>
-
-                <span class="gh-manual-umol" id="gh-manual-total">0 µmol</span>
+                <span class="gh-manual-umol gh-manual-total-umol" id="gh-manual-total">0 µmol</span>
             </div>
         </div>
 
@@ -1408,70 +1450,51 @@ _renderManualSection(zone) {
     `;
     }
 
+// Сума µmol рахується ЛИШЕ зі стану, прочитаного з топіків груп
+// LogicService/Zone_x_Channel_y: по кожному каналу brightness_real * max_µmol / 100,
+// далі сума по каналах. Локальні повзунки на неї не впливають: поки нове
+// значення не повернеться з топіка, сума не змінюється.
+// Повзунок і поле % оновлюються з DOM - це лише відображення вводу.
 _updateManualDisplay() {
-    if (!this._modalRoot) return;
+    if (!this._modalRoot || !this._modalState) return;
+    const { zone } = this._modalState;
 
     let totalUmol = 0;
     let maxUmol = 0;
 
     this._channelIndexes().forEach((ch) => {
-        const range = this._modalRoot.querySelector(
-            `.gh-m-range[data-ch="${ch}"]`
-        );
-
-        if (!range) return;
-
-        const pct = clampPercent(range.value);
         const channelMax = this._getMaxUmol(ch);
-        const umol = channelMax * pct / 100;
-
-        totalUmol += umol;
+        const statePct = clampPercent(realBrightness(this._getChannelState(zone, ch)));
+        totalUmol += channelMax * statePct / 100;
         maxUmol += channelMax;
+    });
 
-        range.style.setProperty('--fill', `${pct}%`);
+    this._channelIndexes().forEach((ch) => {
+        const range = this._modalRoot.querySelector(`.gh-m-range[data-ch="${ch}"]`);
+        const number = this._modalRoot.querySelector(`.gh-manual-number[data-ch="${ch}"]`);
+        const segment = this._modalRoot.querySelector(`#gh-manual-stack [data-ch="${ch}"]`);
 
-        const number = this._modalRoot.querySelector(
-            `.gh-manual-number[data-ch="${ch}"]`
-        );
-
-        const umolText = this._modalRoot.querySelector(
-            `.gh-manual-umol[data-ch="${ch}"]`
-        );
-
-        const segment = this._modalRoot.querySelector(
-            `#gh-manual-stack [data-ch="${ch}"]`
-        );
-
-        if (number && document.activeElement !== number) {
-            number.value = pct;
-        }
-
-        if (umolText) {
-            umolText.textContent = `${formatUmol(umol)} µmol`;
+        if (range) {
+            const inputPct = clampPercent(range.value);
+            range.style.setProperty('--fill', `${inputPct}%`);
+            if (number && document.activeElement !== number) {
+                number.value = inputPct;
+            }
         }
 
         if (segment) {
-            segment.style.width = `${
-                maxUmol ? (umol / this._channelIndexes().reduce(
-                    (sum, c) => sum + this._getMaxUmol(c), 0
-                )) * 100 : 0
-            }%`;
+            const statePct = clampPercent(realBrightness(this._getChannelState(zone, ch)));
+            const segUmol = this._getMaxUmol(ch) * statePct / 100;
+            segment.style.width = `${maxUmol ? (segUmol / maxUmol) * 100 : 0}%`;
         }
     });
 
     const total = this._modalRoot.querySelector('#gh-manual-total');
-    const totalPct = this._modalRoot.querySelector('#gh-manual-total-pct');
 
     if (total) {
-        total.textContent =
-            `${formatUmol(totalUmol)} µmol`;
+        total.textContent = `${formatUmol(totalUmol)} µmol`;
     }
 
-    if (totalPct) {
-        totalPct.textContent = String(
-            maxUmol ? Math.round(totalUmol / maxUmol * 100) : 0
-        );
-    }
 }
 
 _attachManualListeners(zone) {
@@ -1493,14 +1516,8 @@ _attachManualListeners(zone) {
         // (алгоритми) - їх прийде оновити retained-повідомленням.
         this._publishSet(zone, ch, { brightness_user: pct });
 
-        const cfg = this._getChannelState(zone, ch);
-
-        this._channelState[groupName(zone, ch)] = {
-            ...cfg,
-            brightness_user: pct
-        };
-
-        this._updateZoneStatuses();
+        // Локально стан НЕ оновлюємо: плитка зони (brightness_user) і сума µmol
+        // (brightness_real) оновляться, коли LogicService поверне повідомлення групи.
         this._updateManualDisplay();
     };
 
@@ -1695,7 +1712,7 @@ _attachManualListeners(zone) {
     }
 
     // Спільний рендер таблиці розкладу для таймерного й авто режимів:
-    // № | час | % по кожному каналу | µmol по кожному каналу | сума µmol
+    // № | час | % по кожному каналу | Σ µmol (рахує бекенд)
     _renderScheduleSection(zone, isAuto = false) {
         const chs = this._channelIndexes();
         const n = chs.length;
@@ -1703,8 +1720,6 @@ _attachManualListeners(zone) {
 
         const pctHeads = chs.map((ch) =>
             `<div style="color:${this._channelColor(ch)}"><i class="gh-dot" style="background:${this._channelColor(ch)}"></i>%</div>`).join('');
-        const umolHeads = chs.map((ch, i) =>
-            `<div class="gh-umol-head"><i class="gh-dot" style="background:${this._channelColor(ch)}"></i>µmol</div>`).join('');
 
         let rowsHtml = '';
         for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
@@ -1715,8 +1730,6 @@ _attachManualListeners(zone) {
                                 const v = row.pct[ch - 1];
                 return `<input type="number" class="gh-slot-percent" data-slot="${idx}" data-ch="${ch}" min="0" max="100" placeholder="%" value="${v === undefined ? '' : v}" style="color:${this._channelColor(ch)}">`;
             }).join('');
-            const umolCells = chs.map((ch, i) =>
-                `<div class="gh-slot-calc${i === 0 ? ' gh-umol-first' : ''}" data-calc-slot="${idx}" data-ch="${ch}" style="color:${this._channelColor(ch)}">–</div>`).join('');
 
             rowsHtml += `
                 <div class="gh-scenario-row">
@@ -1730,13 +1743,12 @@ _attachManualListeners(zone) {
                         <input type="hidden" data-slot="${idx}" class="gh-slot-time" value="${row.time}">
                     </div>
                     ${pctCells}
-                    ${umolCells}
-                    <div class="gh-slot-calc total" data-total-slot="${idx}">–</div>
+                    <div class="gh-slot-calc total gh-umol-first" data-total-slot="${idx}">–</div>
                 </div>
             `;
         }
 
-        const minWidth = 26 + 100 + (2 * n + 1) * 50 + (2 * n + 3) * 8;
+        const minWidth = 26 + 100 + (n + 1) * 50 + (n + 3) * 8;
 
         return `
             <div class="gh-sched-wrap">
@@ -1744,7 +1756,6 @@ _attachManualListeners(zone) {
                     <div class="gh-scenario-row gh-sched-head">
                         <div></div><div>Час</div>
                         ${pctHeads}
-                        ${umolHeads}
                         <div>Σ</div>
                     </div>
                     ${rowsHtml}
@@ -1762,44 +1773,49 @@ _attachManualListeners(zone) {
         `;
     }
 
-    // Перераховує колонки µmol (по каналах і суму) для всіх рядків за % у полях
-    // форми. Читає значення прямо з DOM, тож безпечно викликати на кожен ввід.
-    _recalcUmolColumn() {
+    // ---- Сума µmol таймера: рахується тут ----
+    // Рядок: Σ pct * max_umol / 100 після pbdLimit (як сервіс обмежує ватти).
+    // Порожній рядок (жодного %) - "–". Порожній % у заповненому рядку = 0.
+    _updateScheduleSums() {
         if (!this._modalRoot) return;
         const chs = this._channelIndexes();
 
-        for (let idx = 0; idx < SCENARIO_SLOTS; idx++) {
-            let total = 0;
-            let any = false;
-            const mix = [0, 0, 0]; // колір суми: кольори каналів, зважені за µmol
+        for (let slot = 0; slot < SCENARIO_SLOTS; slot++) {
+            const cell = this._modalRoot.querySelector(`[data-total-slot="${slot}"]`);
+            if (!cell) continue;
 
+            let any = false;
+            const targets = {};
             chs.forEach((ch) => {
-                const input = this._modalRoot.querySelector(`.gh-slot-percent[data-slot="${idx}"][data-ch="${ch}"]`);
-                const calc = this._modalRoot.querySelector(`.gh-slot-calc[data-calc-slot="${idx}"][data-ch="${ch}"]`);
-                if (!input || !calc) return;
-                if (input.value === '') {
-                    calc.textContent = '–';
-                    return;
+                const input = this._modalRoot.querySelector(`.gh-slot-percent[data-slot="${slot}"][data-ch="${ch}"]`);
+                if (input && input.value !== '') {
+                    any = true;
+                    targets[ch] = clampPercent(input.value);
+                } else {
+                    targets[ch] = 0;
                 }
-                const umol = this._getMaxUmol(ch) * clampPercent(input.value) / 100;
-                total += umol;
-                any = true;
-                calc.textContent = formatUmol(umol);
-                const rgb = hexToRgb(this._channelColor(ch));
-                for (let k = 0; k < 3; k++) mix[k] += rgb[k] * umol;
             });
 
-            const totalEl = this._modalRoot.querySelector(`[data-total-slot="${idx}"]`);
-            if (totalEl) {
-                totalEl.textContent = any ? formatUmol(total) : '–';
-                if (any && total > 0) {
-                    const [r, g, b] = mix.map((v) => Math.round(v / total));
-                    totalEl.style.color = `rgb(${r}, ${g}, ${b})`;
-                } else {
-                    totalEl.style.color = '';
-                }
+            if (!any) {
+                cell.textContent = '–';
+                continue;
             }
+
+            const limited = pbdLimit(targets, this._power);
+            const total = chs.reduce((sum, ch) => sum + this._getMaxUmol(ch) * limited[ch] / 100, 0);
+            cell.textContent = formatUmol(total);
         }
+    }
+
+    _onPowerMessage(message) {
+        try {
+            const data = JSON.parse(message.payload);
+            this._power = data && typeof data === 'object' ? data : null;
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Некоректний payload bridge/power:', err);
+            return;
+        }
+        this._updateScheduleSums();
     }
 
     _attachScheduleListeners(zone, isAuto = false) {
@@ -1812,7 +1828,7 @@ _attachManualListeners(zone) {
         const clearBtn = this._modalRoot.querySelector('#gh-clear-scenarios');
 
         this._modalRoot.querySelectorAll('.gh-slot-percent').forEach((input) => {
-            input.addEventListener('input', () => this._recalcUmolColumn());
+            input.addEventListener('input', () => this._updateScheduleSums());
         });
 
         if (saveBtn) {
@@ -1843,7 +1859,7 @@ _attachManualListeners(zone) {
                     return;
                 }
                 this._populateScheduleRows(safeParseScenarios(raw));
-                this._recalcUmolColumn();
+                this._updateScheduleSums();
                 this._flashButtonText(pasteBtn, 'Вставлено ✓ (тисни "Зберегти")', 'Вставити', 2000);
             });
         }
@@ -1851,12 +1867,12 @@ _attachManualListeners(zone) {
         if (clearBtn) {
             clearBtn.addEventListener('click', () => {
                 this._populateScheduleRows([]);
-                this._recalcUmolColumn();
+                this._updateScheduleSums();
                 this._flashButtonText(clearBtn, 'Очищено ✓ (тисни "Зберегти")', 'Очистити', 2000);
             });
         }
 
-        this._recalcUmolColumn();
+        this._updateScheduleSums();
     }
     // ---- Екран "Авто" (опція для будь-якого режиму) ----
     // Займає ту саму робочу область, що й ручний режим/таймер. Показує: чи
@@ -1997,9 +2013,8 @@ _attachManualListeners(zone) {
                 }
             });
             this._updateManualDisplay();
-        } else if (zoneMode === 'timer') {
-            this._recalcUmolColumn();
         }
+        // Таймер: редактор не чіпаємо, суми µmol приходять лише відповіддю бекенду.
     }
 
     disconnectedCallback() {
@@ -2018,6 +2033,10 @@ _attachManualListeners(zone) {
         if (this._unsubSensor) {
             this._unsubSensor();
             this._unsubSensor = null;
+        }
+        if (this._unsubPower) {
+            this._unsubPower();
+            this._unsubPower = null;
         }
         this._mqttSubscribed = false;
     }
