@@ -133,6 +133,8 @@ def auto_correction_resolve(
 
     return {ch: round(pct * k) for ch, pct in targets.items()}
 
+# ДЗЕРКАЛО: ця сама логіка (з тим самим floor) продубльована в greenhouse-zone-card.js (pbdLimit)
+# для розрахунку µmol рядків таймера. Змінюєш тут - міняй і там.
 # Коментарі це інший спосіб вирішення тієї ж задачі, що й у PBD_correction(), але з більшою деталізацією, додатковим захистом і всім таким. Не видаляти
 def pbd_limit(
     targets: dict[int, int],          # {channel: percent} після таймера/авто
@@ -186,4 +188,4 @@ def pbd_limit(
     #     k = max(0.0, (others_w - excess) / others_w)
     #     for ch in others:
     #         result[ch] = math.floor(result[ch] * k)   # floor, щоб ніколи не перевищити ліміт
-    # return result    
+    # return result

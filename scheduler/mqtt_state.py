@@ -23,6 +23,14 @@ MQTT-шар LogicService з ДВОМА окремими зонами відпо�
                                                  {"lux": 1554}. Використо-
                                                  вується авторежимом
                                                  (schedule_logic.resolve_auto_brightness).
+    LogicService/bridge/power                <- retained, публікується при кожному
+                                                 підключенні: параметри PBD з
+                                                 config.yaml, щоб картка сама
+                                                 рахувала µmol рядків таймера:
+                                                 {"enabled": true, "max_watts": 120,
+                                                  "channel_watts": {"1": 40, ...},
+                                                  "yield_channel": 3}
+                                                 Сервіс на нього НЕ підписаний.
 
 Читання сенсору:
  Сервіс слухає zigbee2mqtt/+ , тобто усі пристрої і якщо якийсь із них присилає JSON з ключем "illuminance",
@@ -183,6 +191,21 @@ class MqttState:
         self._client.publish(
             f"{self.CONTROL_PREFIX}/bridge/max_umol",
             json.dumps(max_umol_payload),
+            retain=True,
+        )
+
+        # Параметри PBD для UI (картка дзеркалить pbd_limit з schedule_logic.py).
+        # Ключі channel_watts у JSON завжди рядки.
+        pw = settings.power
+        power_payload = {
+            "enabled": bool(pw.enabled),
+            "max_watts": pw.max_watts,
+            "channel_watts": {str(ch): w for ch, w in pw.channel_watts.items()},
+            "yield_channel": pw.yield_channel,
+        }
+        self._client.publish(
+            f"{self.CONTROL_PREFIX}/bridge/power",
+            json.dumps(power_payload),
             retain=True,
         )
 
