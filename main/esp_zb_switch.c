@@ -49,12 +49,10 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
             if (status == ESP_OK) { // Якщо ми успішно знайшли мережу і приєдналися до неї
                 esp_zb_ieee_addr_t ieee; // Змінна для зберігання нашої довгої MAC-адреси
                 esp_zb_get_long_address(ieee); // Зчитуємо власну MAC-адресу
-                ESP_LOGI(TAG, "Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, встановлюю вимикаю усі канали",
+                ESP_LOGI(TAG, "Успішно приєднано до мережі! MAC-адреса: %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x, яскравість збережено",
                          ieee[7], ieee[6], ieee[5], ieee[4], ieee[3], ieee[2], ieee[1], ieee[0]);
                     
-                for (int i = 1; i <= NUMBER_OF_CHANNEL_ENDPOINTS; i++){
-                    set_level_of_driver_and_strip(0, i);
-                }
+                // Joining the network must preserve the output; only server dimming changes it.
             } else {
                 // Якщо мережу не знайдено (координатор вимкнений або закритий для підключення)
                 ESP_LOGW(TAG, "Пошук мережі невдалий. Повторна спроба через 5 секунд...");
@@ -97,7 +95,8 @@ static esp_err_t zb_action_handler(esp_zb_core_action_callback_id_t callback_id,
             
             }
         // Отримання HEART BEAT (Cluster 0xFF01, Attribute 0x0000) сигналу
-        } else if(attr_msg->info.dst_endpoint == 2 && attr_msg->attribute.id == 0x0) {
+        } else if(attr_msg->info.dst_endpoint == 2 &&
+                  attr_msg->info.cluster == 0xFF01 && attr_msg->attribute.id == 0x0) {
             // Обробка атрибута Heart Beat (Cluster 0xFF01, Attribute 0x0000)
             uint8_t heart_beat_value = *(uint8_t *)attr_msg->attribute.data.value;
             //heart_beat_report_status(*(uint8_t *)attr_msg->attribute.data.value);

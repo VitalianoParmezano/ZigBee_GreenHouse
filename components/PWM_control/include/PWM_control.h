@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 
 #define PWM_NEG_GPIO         5
@@ -23,4 +24,5 @@
 void pwm_init(void);
 
 void pwm_out_set_percent(uint8_t channel, uint8_t level);
+void pwm_out_fade_to_percent(uint8_t channel, uint8_t level, int duration_ms);
 
