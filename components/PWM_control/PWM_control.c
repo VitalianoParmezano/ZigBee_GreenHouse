@@ -5,11 +5,17 @@
 #include "esp_log.h"
 #include "esp_rom_gpio.h"
 #include "soc/gpio_sig_map.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 
 static const char *TAG = "PWM control";
+static SemaphoreHandle_t output_mutex;
 
 void pwm_init(void)
 {
+    output_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(output_mutex != NULL ? ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(ledc_fade_func_install(0));
     /* --- Таймер + канал для GPIO5  --- */
     ledc_timer_config_t timer_neg = {
         .speed_mode      = LEDC_MODE,
@@ -48,7 +54,7 @@ void pwm_init(void)
         .speed_mode = LEDC_MODE,
         .channel    = LEDC_CHANNEL_OUT,
         .timer_sel  = LEDC_TIMER_OUT,
-        .duty       = 0,   
+        .duty       = (1U << PWM_OUT_DUTY_RES), // Start at 100% until a server dimming command.
         .hpoint     = 0,
     };
     ESP_ERROR_CHECK(ledc_channel_config(&channel_out));
@@ -79,6 +85,26 @@ void pwm_out_set_percent(uint8_t channel, uint8_t level)
     uint32_t max_duty = (1 << PWM_OUT_DUTY_RES);
     uint32_t duty = (max_duty * level) / 100;
 
+    xSemaphoreTake(output_mutex, portMAX_DELAY);
+    ESP_ERROR_CHECK(ledc_fade_stop(LEDC_MODE, LEDC_CHANNEL_OUT));
     ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL_OUT, duty));
     ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL_OUT));
+    xSemaphoreGive(output_mutex);
+}
+
+void pwm_out_fade_to_percent(uint8_t channel, uint8_t level, int duration_ms)
+{
+    if (channel != 1) {
+        return;
+    }
+    if (level > 100) {
+        level = 100;
+    }
+    uint32_t duty = ((1U << PWM_OUT_DUTY_RES) * level) / 100;
+
+    xSemaphoreTake(output_mutex, portMAX_DELAY);
+    ESP_ERROR_CHECK(ledc_fade_stop(LEDC_MODE, LEDC_CHANNEL_OUT));
+    ESP_ERROR_CHECK(ledc_set_fade_with_time(LEDC_MODE, LEDC_CHANNEL_OUT, duty, duration_ms));
+    ESP_ERROR_CHECK(ledc_fade_start(LEDC_MODE, LEDC_CHANNEL_OUT, LEDC_FADE_NO_WAIT));
+    xSemaphoreGive(output_mutex);
 }
