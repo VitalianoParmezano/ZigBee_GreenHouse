@@ -1,3 +1,4 @@
+#include "project_config.h"
 #include <stdio.h>
 #include <stdint.h>
 #include "heart_beat.h"
@@ -16,7 +17,7 @@ static esp_timer_handle_t watchdog_timer = NULL;
 // Налаштування інтервалів (у мікросекундах)
 #define PING_BASE_INTERVAL_US    50000000ULL // 50 секунд
 #define PING_RANDOM_WINDOW_US    20000000ULL // + до 20 секунд (разом 50-70 сек)
-#define WATCHDOG_TIMEOUT_US      180000000ULL // 3 хвилини (180 сек) без відповіді = Офлайн
+#define WATCHDOG_TIMEOUT_US      PROJECT_SERVER_TIMEOUT_US // 3 хвилини (180 сек) без відповіді = Офлайн
 
 // Попереднє оголошення функцій
 static void send_boot_status_report(uint8_t status_value);

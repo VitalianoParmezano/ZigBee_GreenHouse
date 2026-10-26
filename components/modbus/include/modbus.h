@@ -1,5 +1,6 @@
 #ifndef MODBUS_H
 #define MODBUS_H
+#include "project_config.h"
 
 
 /* Явні дефініції пінів для modbus
@@ -7,10 +8,10 @@
     тут усі піни які треба для цього
 */
 #define MB_PORT_NUM            UART_NUM_1
-#define MB_UART_TXD            GPIO_NUM_0
-#define MB_UART_RXD            GPIO_NUM_1
-#define MB_UART_RTS            GPIO_NUM_2 
-#define MB_DEV_SPEED           115200 
+#define MB_UART_TXD            PROJECT_MODBUS_TX_GPIO
+#define MB_UART_RXD            PROJECT_MODBUS_RX_GPIO
+#define MB_UART_RTS            PROJECT_MODBUS_RTS_GPIO
+#define MB_DEV_SPEED           PROJECT_MODBUS_BAUDRATE
 
 #include <stdint.h>
 

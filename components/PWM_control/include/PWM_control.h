@@ -1,18 +1,19 @@
 #pragma once
-#define PWM_OUT_STARTUP_PERCENT 99
+#include "project_config.h"
+#define PWM_OUT_STARTUP_PERCENT PROJECT_PWM_STARTUP_PERCENT
 #include <stdint.h>
 
 
-#define PWM_NEG_GPIO         5
-#define PWM_NEG_FREQ_HZ      100000              // 100 кГц
+#define PWM_NEG_GPIO         PROJECT_CHARGE_PUMP_GPIO
+#define PWM_NEG_FREQ_HZ      PROJECT_CHARGE_PUMP_FREQUENCY_HZ              // 100 кГц
 #define PWM_NEG_DUTY_RES     LEDC_TIMER_8_BIT     // 0..255
-#define PWM_NEG_DUTY_PERCENT 50                   // 50% — потрібно для перемикання charge pump!
+#define PWM_NEG_DUTY_PERCENT PROJECT_CHARGE_PUMP_PERCENT                   // 50% — потрібно для перемикання charge pump!
 
 // GPIO10 — прямий PWM, дає сигнал на перший світильник
-#define PWM_OUT_GPIO        10
+#define PWM_OUT_GPIO        PROJECT_PWM_GPIO
 // GPIO1 — інверсний через GPIO matrix, дає сигнал на декодер
-#define PWM_OUT_MIRROR_GPIO 1                     // 
-#define PWM_OUT_FREQ_HZ     300                  // 300 Гц
+#define PWM_OUT_MIRROR_GPIO PROJECT_PWM_INVERTED_GPIO
+#define PWM_OUT_FREQ_HZ     PROJECT_PWM_FREQUENCY_HZ                  // 300 Гц
 #define PWM_OUT_DUTY_RES     LEDC_TIMER_10_BIT    // 0-1023
 
 #define LEDC_TIMER_NEG       LEDC_TIMER_0

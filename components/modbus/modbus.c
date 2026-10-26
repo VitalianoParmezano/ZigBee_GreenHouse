@@ -11,7 +11,7 @@
 
 typedef struct {
     // 0x0017 - Температура (Увага: може не підтримуватися на прошивці A03, повертає таймаут)
-    uint16_t driver_temp;     
+    uint16_t driver_temp;
 
     uint16_t brightness_ch1;  // 0x0030 - Яскравість CH1
     uint16_t brightness_ch2;  // 0x0031 - Яскравість CH2
@@ -35,11 +35,11 @@ holding_reg_params_t holding_reg_params = { 0 };
 #define OPTS(min_val, max_val, step_val) { .opt1 = min_val, .opt2 = max_val, .opt3 = step_val }
 
 
-#define FAHOLD_SLAVE_ADDR      1 
+#define FAHOLD_SLAVE_ADDR      PROJECT_MODBUS_ADDRESS
 static const char *TAG = "MODBUS";
 static void *master_handle = NULL;
 
-enum { MB_DEVICE_ADDR1 = 1 };
+enum { MB_DEVICE_ADDR1 = PROJECT_MODBUS_ADDRESS };
 
 enum {
     CID_TEMP = 0,
@@ -53,7 +53,7 @@ enum {
 
 const mb_parameter_descriptor_t device_parameters[] = {
     { CID_TEMP, STR("Temp"), STR("C"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0017, 1, HOLD_OFFSET(driver_temp), PARAM_TYPE_U16, 2, OPTS( 0, 120, 0 ), PAR_PERMS_READ },
-    
+
     { CID_BRIGHTNESS_CH1, STR("B_CH1"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0030, 1, HOLD_OFFSET(brightness_ch1), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_WRITE },
     { CID_BRIGHTNESS_CH2, STR("B_CH2"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0031, 1, HOLD_OFFSET(brightness_ch2), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_WRITE },
     { CID_BRIGHTNESS_CH3, STR("B_CH3"), STR("0.1%"), MB_DEVICE_ADDR1, MB_PARAM_HOLDING, 0x0032, 1, HOLD_OFFSET(brightness_ch3), PARAM_TYPE_U16, 2, OPTS( 0, 1000, 1 ), PAR_PERMS_WRITE },
@@ -91,7 +91,7 @@ void modbus_init(void) {
         .ser_opts.baudrate = MB_DEV_SPEED,
         .ser_opts.parity = MB_PARITY_NONE,
         .ser_opts.uid = 0,
-        .ser_opts.response_tout_ms = 1000,
+        .ser_opts.response_tout_ms = PROJECT_MODBUS_RESPONSE_TIMEOUT_MS,
         .ser_opts.data_bits = UART_DATA_8_BITS,
         .ser_opts.stop_bits = UART_STOP_BITS_1
     };
@@ -100,7 +100,7 @@ void modbus_init(void) {
     ESP_ERROR_CHECK(mbc_master_create_serial(&comm, &master_handle));
     ESP_ERROR_CHECK(uart_set_pin(MB_PORT_NUM, MB_UART_TXD, MB_UART_RXD, MB_UART_RTS, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_set_mode(MB_PORT_NUM, UART_MODE_RS485_HALF_DUPLEX));
-    
+
     mbc_master_set_descriptor(master_handle, &device_parameters[0], num_device_parameters);
 
     ESP_ERROR_CHECK(mbc_master_start(master_handle));
@@ -111,7 +111,7 @@ void modbus_init(void) {
 void modbus_send_brightness_to_channel(uint16_t brightness, uint8_t channel) {
 
     printf("Отримано яскравість %d to channel %d via Modbus\n", brightness, channel);
-    // if (!master_handle || channel < 1 || channel > 3) return;
+    if (!master_handle || channel < 1 || channel > 3) return;
     if (brightness > 1000) brightness = 1000;
 
     // // Математика: CH1 = 0x0030, CH2 = 0x0031, CH3 = 0x0032
@@ -136,7 +136,7 @@ void modbus_send_brightness_to_channel(uint16_t brightness, uint8_t channel) {
 
 
     uint8_t write_type = 0;
-    mbc_master_set_parameter(master_handle, cid, (uint8_t*)&brightness, &write_type); 
+    mbc_master_set_parameter(master_handle, cid, (uint8_t*)&brightness, &write_type);
 
     ESP_LOGI(TAG, "Параметр CID %d відправлено через mbc_master_set_parameter", cid);
 }
