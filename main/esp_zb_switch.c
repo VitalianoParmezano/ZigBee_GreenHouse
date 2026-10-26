@@ -156,6 +156,8 @@ static void zigbee_task(void *arg) {
 // ТОЧКА ВХОДУ В ПРОГРАМУ (MAIN)
 // ==========================================
 void app_main(void) {
+    pwm_prepare_startup_outputs();
+
     // Ініціалізація енергонезалежної пам'яті (NVS).
     esp_err_t ret = nvs_flash_init();
     
