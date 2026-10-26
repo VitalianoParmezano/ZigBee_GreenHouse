@@ -18,6 +18,9 @@
 //   Сценарії (scenarios[].brightness) - це план user-яскравості, не чіпаємо.
 //   LogicService/bridge/request          <- online/offline пристрою:
 //                                            {zone, device, status}
+//   LogicService/bridge/sensor           <-> показник датчика {"lux": ...}: картка показує його
+//                                            внизу вікна (lux і µmol), а при DEBUG_UMOL_SENSOR
+//                                            може й сама публікувати значення повзунком
 //
 // Сума µmol рядків таймера рахується в картці: Σ pct * max_umol / 100 після обмеження PBD.
 // pbdLimit() - дзеркало pbd_limit() з schedule_logic.py (тримати синхронно!). Параметри PBD:
@@ -43,9 +46,12 @@ const CHANNELS_PER_ZONE = 3;
 const SCENARIO_SLOTS = 12;
 const CONTROL_PREFIX = 'LogicService';
 const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV2'; // V2: рядки містять % для всіх каналів
+const DEBUG_UMOL_SENSOR = false; // true = внизу вікна показувати значення датчика (lux і µmol) та повзунок, що імітує датчик; false = нічого не показувати
+const LUX_PER_UMOL = 69;        // 69 lux = 1 µmol/m²/s (PPFD) - так само зашито на сервері (auto_correction_resolve)
 const ZONE_LABEL = 'Хатка'; // Константа яка використовується для показу кінцевому користувачу
 
 const POWER_TOPIC = `${CONTROL_PREFIX}/bridge/power`;
+const SENSOR_TOPIC = `${CONTROL_PREFIX}/bridge/sensor`;
 
 // ---- Налаштування каналів (індекс 0 = канал 1, 1 = канал 2, ...) ----
 // Скільки мікромолей (µmol/m²/s) дає канал при 100% потужності.
@@ -167,6 +173,10 @@ class GreenhouseZoneCard extends HTMLElement {
         // Параметри PBD з LogicService/bridge/power (null, поки не прийшли).
         this._unsubPower = null;
         this._power = null;
+
+        // Показ датчика з LogicService/bridge/sensor, lux (null = ще не було).
+        this._unsubSensor = null;
+        this._sensorValue = null;
     }
 
     setConfig(config) {
@@ -241,6 +251,15 @@ class GreenhouseZoneCard extends HTMLElement {
             );
         } catch (err) {
             console.error('[GreenhouseZoneCard] Не вдалось підписатись на bridge/power:', err);
+        }
+
+        try {
+            this._unsubSensor = await this._hass.connection.subscribeMessage(
+                (message) => this._onSensorMessage(message),
+                { type: 'mqtt/subscribe', topic: SENSOR_TOPIC }
+            );
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Не вдалось підписатись на sensor:', err);
         }
 
     }
@@ -1139,6 +1158,11 @@ class GreenhouseZoneCard extends HTMLElement {
                 /* Увімкнено: синя рамка, текст і світла крапка */
                 .gh-pill-auto.on { border-color: var(--primary-color, #03a9f4); color: var(--primary-color, #03a9f4); }
                 .gh-pill-auto.on .gh-auto-dot { background: var(--primary-color, #03a9f4); box-shadow: 0 0 6px var(--primary-color, #03a9f4); }
+                /* ---- Датчик (DEBUG_UMOL_SENSOR): значення та повзунок внизу вікна ---- */
+                .gh-sensor-bar { padding: 12px 20px 16px 20px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+                .gh-sensor-bar .gh-field-row { margin: 10px 0 0 0; }
+                .gh-modal-box .gh-sensor-bar { font-size: ${TEXT_FONT_SIZE}px !important; font-weight: 500 !important; }
+                .gh-modal-box .gh-sensor-bar b { font-size: ${NUMBER_FONT_SIZE}px !important; font-weight: 700 !important; font-variant-numeric: tabular-nums; }
             </style>
             <div class="gh-modal-box">
                 <div class="gh-modal-header">
@@ -1149,6 +1173,16 @@ class GreenhouseZoneCard extends HTMLElement {
                 <div class="gh-mode-row" id="gh-mode-row"></div>
 
                 <div class="gh-modal-body" id="gh-modal-body"></div>
+
+                ${DEBUG_UMOL_SENSOR ? `
+                <div class="gh-sensor-bar">
+                    <div>Датчик: <b id="gh-sensor-lux">–</b> lux · <b id="gh-sensor-umol">–</b> µmol</div>
+                    <div class="gh-field-row">
+                        <input type="range" min="0" max="2500" id="gh-sensor-range" value="0">
+                        <input type="number" min="0" id="gh-sensor-number" value="0">
+                    </div>
+                    <div class="gh-hint">Тимчасова заміна датчика: публікує {"lux": ...} в ${SENSOR_TOPIC}.</div>
+                </div>` : ''}
             </div>
         `;
 
@@ -1160,6 +1194,7 @@ class GreenhouseZoneCard extends HTMLElement {
         this._modalRoot = overlay;
 
         overlay.querySelector('#gh-modal-close').addEventListener('click', () => this._closeModal());
+        this._attachSensorDebug();
 
         // Клік/тап у числове або часове поле виділяє весь вміст - нове значення
         // просто замінює старе, стирати вручну не треба.
@@ -1699,6 +1734,72 @@ _attachManualListeners(zone) {
         this._updateScheduleSums();
     }
 
+    // LogicService/bridge/sensor: {"lux": 1554}
+    _onSensorMessage(message) {
+        try {
+            const n = Number(JSON.parse(message.payload).lux);
+            this._sensorValue = Number.isNaN(n) ? null : n;
+        } catch {
+            return;
+        }
+        this._updateSensorDebug();
+    }
+
+    // Повзунок-імітатор датчика (DEBUG_UMOL_SENSOR): публікує {"lux": ...}, як справжній датчик.
+    _attachSensorDebug() {
+        const range = this._modalRoot.querySelector('#gh-sensor-range');
+        const number = this._modalRoot.querySelector('#gh-sensor-number');
+        if (!range || !number) return;
+
+        const sync = (value) => {
+            range.value = value;
+            number.value = value;
+        };
+        const commit = (value) => {
+            const lux = Math.max(0, Math.round(Number(value)) || 0);
+            sync(lux);
+            this._publishSensorReading(lux);
+        };
+        range.addEventListener('input', () => sync(range.value));
+        range.addEventListener('change', () => commit(range.value));
+        number.addEventListener('change', () => commit(number.value));
+
+        this._updateSensorDebug();
+    }
+
+    async _publishSensorReading(lux) {
+        if (!this._hass) return;
+        try {
+            await this._hass.callService('mqtt', 'publish', {
+                topic: SENSOR_TOPIC,
+                payload: JSON.stringify({ lux }),
+            });
+        } catch (err) {
+            console.error('[GreenhouseZoneCard] Помилка публікації сенсора:', err);
+        }
+    }
+
+    // Показує останнє значення датчика: lux і µmol (= lux / LUX_PER_UMOL).
+    _updateSensorDebug() {
+        if (!this._modalRoot) return;
+        const luxEl = this._modalRoot.querySelector('#gh-sensor-lux');
+        const umolEl = this._modalRoot.querySelector('#gh-sensor-umol');
+        if (!luxEl || !umolEl) return;
+
+        const v = this._sensorValue;
+        luxEl.textContent = v === null ? '–' : formatUmol(v);
+        umolEl.textContent = v === null ? '–' : formatUmol(v / LUX_PER_UMOL);
+
+        // Повзунок підтягує реальне значення, якщо користувач його не тримає.
+        const range = this._modalRoot.querySelector('#gh-sensor-range');
+        const number = this._modalRoot.querySelector('#gh-sensor-number');
+        if (v !== null && range && number &&
+            document.activeElement !== range && document.activeElement !== number) {
+            range.value = v;
+            number.value = v;
+        }
+    }
+
     _attachScheduleListeners(zone, isAuto = false) {
         this._attachTimeInputListeners();
 
@@ -1798,6 +1899,10 @@ _attachManualListeners(zone) {
         if (this._unsubPower) {
             this._unsubPower();
             this._unsubPower = null;
+        }
+        if (this._unsubSensor) {
+            this._unsubSensor();
+            this._unsubSensor = null;
         }
         this._mqttSubscribed = false;
     }
