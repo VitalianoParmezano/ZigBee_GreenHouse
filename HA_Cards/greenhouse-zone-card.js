@@ -13,8 +13,8 @@
 //   brightness_real  - що РЕАЛЬНО світить лампа після алгоритмів (Авто тощо).
 //                      Лише читається, картка її ніколи не пише.
 //   brightness_real у картці читається лише для µmol у ручному режимі. Плитка зони й
-//   решта екранів працюють тільки з brightness_user; поле state не
-//   використовується (зона увімкнена, якщо brightness_user > 0 хоч на каналі).
+//   решта екранів працюють з brightness_user; поле state не використовується
+//   (зона увімкнена, якщо brightness_user > 0 хоч на каналі).
 //   Сценарії (scenarios[].brightness) - це план user-яскравості, не чіпаємо.
 //   LogicService/bridge/request          <- online/offline пристрою:
 //                                            {zone, device, status}
@@ -46,7 +46,7 @@ const CHANNELS_PER_ZONE = 3;
 const SCENARIO_SLOTS = 12;
 const CONTROL_PREFIX = 'LogicService';
 const SCENARIO_CLIPBOARD_KEY = 'greenhouseScenarioClipboardV2'; // V2: рядки містять % для всіх каналів
-const DEBUG_UMOL_SENSOR = false; // true = внизу вікна показувати значення датчика (lux і µmol) та повзунок, що імітує датчик; false = нічого не показувати
+const DEBUG_UMOL_SENSOR = true; // true = внизу вікна показувати значення датчика (lux і µmol) та повзунок, що імітує датчик; false = нічого не показувати
 const LUX_PER_UMOL = 69;        // 69 lux = 1 µmol/m²/s (PPFD) - так само зашито на сервері (auto_correction_resolve)
 const ZONE_LABEL = 'Хатка'; // Константа яка використовується для показу кінцевому користувачу
 
@@ -529,9 +529,9 @@ class GreenhouseZoneCard extends HTMLElement {
             for (let j = 1; j <= CHANNELS_PER_ZONE; j++) {
                 const _cfg = this._getChannelState(i, j);
                 
-                // Підсвітка плитки залежить лише від brightness_user: зона
-                // "увімкнена", якщо хоч на одному каналі >0%. brightness_real
-                // і state тут не використовуються.
+                // Зона "увімкнена", якщо хоч на одному каналі >0%.
+                // Береться brightness_user з топіка групи (користувацька яскравість).
+                // brightness_real і state тут не використовуються.
                 const temp_brightness = userBrightness(_cfg);
                 if (temp_brightness > 0) {
                     isZoneOn = true;
