@@ -284,7 +284,7 @@ class MqttState:
             log.warning("SET %s: очікувався JSON-об'єкт, отримано %r", group, payload)
             return
 
-        updated = self.store.update(zone, channel, payload)
+        updated = self.save_config(zone, channel, payload)
         log.info("SET %s <- %s => збережено %s", group, payload, updated)
 
         # /set лише зберігає намір користувача. Яскравість на лампу рахує сервіс
@@ -295,8 +295,6 @@ class MqttState:
             except Exception:
                 # виняток у розрахунку не повинен зупинити мережевий потік paho
                 log.exception("SET %s: помилка перерахунку зони %s", group, zone)
-
-        self._broadcast(group, self._channel_view(zone, channel))
 
     def _handle_get(self, group: str, payload_bytes: bytes) -> None:
         parsed = _parse_group_name(group)
@@ -318,6 +316,16 @@ class MqttState:
         зручно для будь-кого, хто просто хоче спостерігати за змінами."""
         full = _with_derived_state(cfg)
         self._client.publish(f"{self.CONTROL_PREFIX}/{group}", json.dumps(full), retain=True)
+
+    # ------------------------------------------------------------------ #
+    def save_config(self, zone: int, channel: int, updates: dict[str, Any]) -> dict[str, Any]:
+        """Єдиний шлях запису налаштувань каналу: і для /set, і для таймера
+        (який пише в brightness_user своє поточне значення). Зберігає в БД і
+        одразу публікує оновлений стан. Перерахунок зони НЕ запускає - це
+        робить виклик on_set у _handle_set."""
+        updated = self.store.update(zone, channel, updates)
+        self._broadcast(group_name(zone, channel), self._channel_view(zone, channel))
+        return updated
 
     # ------------------------------------------------------------------ #
     def apply_brightness(self, zone: int, channel: int, target: int) -> None:

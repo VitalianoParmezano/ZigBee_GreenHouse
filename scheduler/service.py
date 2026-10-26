@@ -17,10 +17,8 @@
 """
 from __future__ import annotations
 
-from ast import Store
 import logging
 import time
-import scheduler.store as store
 import threading
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
@@ -36,7 +34,6 @@ log = logging.getLogger("service")
 class SchedulerService:
     def __init__(self) -> None:
         self.state = MqttState()
-        self.store = store.ChannelStore()
         # (zone, channel) -> останнє застосоване timer-ом значення, щоб не
         # спамити мережу однаковою командою щотіку, поки нічого не змінилось.
         self._last_sent: dict[tuple[int, int], int] = {}
@@ -155,6 +152,12 @@ class SchedulerService:
             nxt = next_change(points, now_minutes) if points else None
             log.info("%s: timer -> %s%% (наступна зміна о %s)",
                     label, target, nxt.time_str if nxt else "-")
+
+            # Запам'ятовуємо останнє значення таймера в brightness_user, щоб після
+            # переходу на manual лампа лишилась на ньому. Це значення розкладу ДО
+            # PBD/Auto. Пишемо лише при зміні й лише коли розклад не порожній.
+            if points and cfg.get("brightness_user") != target:
+                self.state.save_config(zone, channel, {"brightness_user": int(target)})
 
         else:
             log.warning("%s: невідомий mode=%r -> 0%%", label, mode)

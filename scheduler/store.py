@@ -51,7 +51,7 @@ class ChannelStore:
     """Потокобезпечний доступ до локальної бази конфігурації каналів."""
 
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()   # RLock: update() бере лок і викликає get(), який бере його теж
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         with self._lock:
             self._conn.execute(_SCHEMA)
@@ -91,14 +91,16 @@ class ChannelStore:
         }
 
     def update(self, zone: int, channel: int, updates: dict[str, Any]) -> dict[str, Any]:
-        """Часткове оновлення - приймає лише ключі з VALID_FIELDS, решту ігнорує."""
-        current = self.get(zone, channel)
-        for key, value in updates.items():
-            if key not in VALID_FIELDS:
-                continue
-            current[key] = value
-
+        """Часткове оновлення - приймає лише ключі з VALID_FIELDS, решту ігнорує.
+        Читання і запис виконуються під одним локом (атомарно): інакше тік і /set,
+        що прийшли одночасно, могли б затерти зміни один одного."""
         with self._lock:
+            current = self.get(zone, channel)
+            for key, value in updates.items():
+                if key not in VALID_FIELDS:
+                    continue
+                current[key] = value
+
             self._conn.execute(
                 """
                 INSERT INTO channel_config
