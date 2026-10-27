@@ -1,4 +1,6 @@
 #pragma once
+#define PWM_OUT_STARTUP_PERCENT 99
+#include <stdint.h>
 
 
 #define PWM_NEG_GPIO         5
@@ -21,6 +23,9 @@
 
 
 void pwm_init(void);
+// Call first in app_main(), before peripheral initialization.
+void pwm_prepare_startup_outputs(void);
 
 void pwm_out_set_percent(uint8_t channel, uint8_t level);
+void pwm_out_fade_to_percent(uint8_t channel, uint8_t level, int duration_ms);
 

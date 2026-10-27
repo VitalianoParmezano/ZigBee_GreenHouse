@@ -29,10 +29,11 @@ void set_level_of_driver_and_strip(uint8_t level, uint8_t channel)
 }
 
 void light_driver_set_offline(){
-    // Встановлюємо рівень яскравості на 0 для всіх каналів (вимикаємо світло)
+    // Без відповіді сервера плавно повертаємо PWM до 100% за 10 секунд.
     int level = LIGHT_DRIVER_OFFLINE_VALUE; // Можна встановити будь-який рівень яскравості, який вважаєте за потрібне для офлайн-режиму
 
     for (uint8_t channel = 1; channel <= NUMBER_OF_CHANNEL_ENDPOINTS; channel++) {
-        set_level_of_driver_and_strip(level, channel);
+        led_strip_set_level(channel, level);
+        pwm_out_fade_to_percent(channel, level, 10000);
     }
 }
