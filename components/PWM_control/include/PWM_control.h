@@ -1,5 +1,4 @@
 #pragma once
-#define PWM_OUT_STARTUP_PERCENT 99
 #include <stdint.h>
 
 
@@ -12,9 +11,9 @@
 // PWM. Стався випадок що коли нижче 10% то світильник
 // не подавав живлення на есп і та перезапускалась.
 #define PWM_MIN_PERCENT 9
+// Початковий відсоток який подається на світильник при старті.
+#define PWM_OUT_STARTUP_PERCENT 70
 
-// Початкове 10 бітне значення PWM під час старту системи 
-#define PWM_STARTUP_BRIGHTNESS 716
 
 // GPIO10 — прямий PWM, дає сигнал на перший світильник
 #define PWM_OUT_GPIO        10
