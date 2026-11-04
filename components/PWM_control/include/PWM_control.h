@@ -7,6 +7,14 @@
 #define PWM_NEG_DUTY_RES     LEDC_TIMER_8_BIT     // 0..255
 #define PWM_NEG_DUTY_PERCENT 50                   // 50% — потрібно для перемикання charge pump!
 
+// Мінімальний відсоток який можна відправити по
+// PWM. Стався випадок що коли нижче 10% то світильник
+// не подавав живлення на есп і та перезапускалась.
+#define PWM_MIN_PERCENT 9
+
+// Початкове 10 бітне значення PWM під час старту системи 
+#define PWM_STARTUP_BRIGHTNESS 716
+
 // GPIO10 — прямий PWM, дає сигнал на перший світильник
 #define PWM_OUT_GPIO        10
 // GPIO1 — інверсний через GPIO matrix, дає сигнал на декодер

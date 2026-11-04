@@ -54,7 +54,7 @@ void pwm_init(void)
         .speed_mode = LEDC_MODE,
         .channel    = LEDC_CHANNEL_OUT,
         .timer_sel  = LEDC_TIMER_OUT,
-        .duty       = (1U << PWM_OUT_DUTY_RES), // Start at 100% until a server dimming command.
+        .duty       = (PWM_STARTUP_BRIGHTNESS), // Start at startup brightness until a server dimming command.
         .hpoint     = 0,
     };
     ESP_ERROR_CHECK(ledc_channel_config(&channel_out));
@@ -81,6 +81,11 @@ void pwm_out_set_percent(uint8_t channel, uint8_t level)
     if (level > 100) {
         level = 100;
     }
+
+    if (level < PWM_MIN_PERCENT) {
+        level = PWM_MIN_PERCENT;
+    }
+
     ESP_LOGI(TAG, "PWM надсилає відсоток: %d", level);
     uint32_t max_duty = (1 << PWM_OUT_DUTY_RES);
     uint32_t duty = (max_duty * level) / 100;
@@ -100,6 +105,10 @@ void pwm_out_fade_to_percent(uint8_t channel, uint8_t level, int duration_ms)
     if (level > 100) {
         level = 100;
     }
+    if (level < PWM_MIN_PERCENT) {
+        level = PWM_MIN_PERCENT;
+    }
+
     uint32_t duty = ((1U << PWM_OUT_DUTY_RES) * level) / 100;
 
     xSemaphoreTake(output_mutex, portMAX_DELAY);
