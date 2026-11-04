@@ -5,7 +5,7 @@
     І підставити ті команди які треба конкретному проекту.
 */
 
-#define LIGHT_DRIVER_OFFLINE_VALUE 75
+#define LIGHT_DRIVER_OFFLINE_VALUE 100
 
 void set_level_of_driver_and_strip(uint8_t level, uint8_t channel);
 
