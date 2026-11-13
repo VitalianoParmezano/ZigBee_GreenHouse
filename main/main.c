@@ -13,7 +13,7 @@
 #error Define ZB_ED_ROLE in idf.py menuconfig to compile light (End Device) source code.
 #endif
 
-#define LIGHT_SENSOR_UPDATE_INTERVAL_MS   (5 * 1000)  // Опитування датчика кожні 5 секунд
+#define LIGHT_SENSOR_UPDATE_INTERVAL_MS   (10 * 1000)  // Опитування датчика кожні 5 секунд
 #define KOEFISIENT                        4           // Коефіцієнт світлопропускання корпусу
 
 static const char *TAG = "MAIN";
@@ -130,9 +130,9 @@ void esp_zb_app_signal_handler(esp_zb_app_signal_t *signal_struct) {
                      esp_zb_get_pan_id(), esp_zb_get_current_channel(), esp_zb_get_short_address());
             s_is_connected = true;
         } else {
-            ESP_LOGI(TAG, "Network steering was not successful (status: %s), retrying in 1s...", esp_err_to_name(err_status));
+            ESP_LOGI(TAG, "Network steering was not successful (status: %s), retrying ...", esp_err_to_name(err_status));
             s_is_connected = false;
-            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 1000);
+            esp_zb_scheduler_alarm((esp_zb_callback_t)bdb_start_top_level_commissioning_cb, ESP_ZB_BDB_MODE_NETWORK_STEERING, 5000);
         }
         break;
 

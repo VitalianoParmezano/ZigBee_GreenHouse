@@ -1,8 +1,8 @@
 #include <stdint.h>
 #include "esp_err.h"
 
-#define I2C_MASTER_SCL_IO           11          /*!< GPIO для SCL */
-#define I2C_MASTER_SDA_IO           10          /*!< GPIO для SDA */
+#define I2C_MASTER_SCL_IO           10          /*!< GPIO для SCL */
+#define I2C_MASTER_SDA_IO           11          /*!< GPIO для SDA */
 
 #define I2C_MASTER_NUM              I2C_NUM_0   /*!< Номер порту I2C */
 #define I2C_MASTER_FREQ_HZ          100000      /*!< Частота I2C (100 кГц) */
@@ -20,6 +20,8 @@
  * Датчик автоматично вимірює освітленість у фоні кожні 120 мс
  */
 #define SENSOR_ADDR_START_MEASUREMENT  0b00010000
+#define SENSOR_ADDR_START_MEASUREMENT_AND_SLEEP  0b00100000
+
 
 void light_sensor_init(void);
 void light_sensor_power_on(void);

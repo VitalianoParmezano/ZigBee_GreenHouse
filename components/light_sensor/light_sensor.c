@@ -52,7 +52,9 @@ void light_sensor_power_off(void) {
 }
 
 uint16_t light_sensor_get_value(void) {
-    uint8_t send_data[1] = {SENSOR_ADDR_START_MEASUREMENT};
+    uint8_t send_data[1] = {SENSOR_ADDR_START_MEASUREMENT_AND_SLEEP};
+    //uint8_t send_data[1] = {SENSOR_ADDR_START_MEASUREMENT};
+
     uint8_t receive_data[DATA_LENGTH] = {0};
 
     // Посилання команди про початок вимірювання (одноразово)
